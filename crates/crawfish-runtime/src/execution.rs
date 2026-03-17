@@ -1113,7 +1113,10 @@ fn should_trigger_task_plan_encounter(
                     artifact.recommended_disposition,
                     TaskPlanDisposition::ReviewRequired | TaskPlanDisposition::Defer
                 )
-                || matches!(action.contract.safety.approval_policy, ApprovalPolicy::Always)
+                || matches!(
+                    action.contract.safety.approval_policy,
+                    ApprovalPolicy::Always
+                )
         }
     }
 }
@@ -1130,7 +1133,9 @@ fn task_plan_review_feedback_from_payload(payload: &TaskPlanReviewPayload) -> St
         parts.push("Revise the plan so that clarification/defer behavior is explicit.".to_string());
     }
     if payload.needs_review {
-        parts.push("Preserve operator review where the plan remains governance-sensitive.".to_string());
+        parts.push(
+            "Preserve operator review where the plan remains governance-sensitive.".to_string(),
+        );
     }
     if !payload.revision_hints.is_empty() {
         parts.push(format!(
@@ -1221,7 +1226,8 @@ impl Supervisor {
         let Some(artifact) = verification.artifact.clone() else {
             return Ok(None);
         };
-        let Some((adapter, base_refs)) = self.resolve_local_harness_adapter(manifest, harness)? else {
+        let Some((adapter, base_refs)) = self.resolve_local_harness_adapter(manifest, harness)?
+        else {
             return Ok(None);
         };
 
@@ -1349,10 +1355,9 @@ impl Supervisor {
             "encounter_policy".to_string(),
             serde_json::to_value(&policy)?,
         );
-        final_outputs.metadata.insert(
-            "encounter_triggered".to_string(),
-            serde_json::json!(true),
-        );
+        final_outputs
+            .metadata
+            .insert("encounter_triggered".to_string(), serde_json::json!(true));
         final_outputs.metadata.insert(
             "encounter_review_decision".to_string(),
             serde_json::to_value(&review.payload.decision)?,
@@ -1840,7 +1845,10 @@ impl Supervisor {
                         .unwrap_or_default()
                         .to_string();
 
-                    if matches!(encounter_final_outcome.as_str(), "review_required" | "defer") {
+                    if matches!(
+                        encounter_final_outcome.as_str(),
+                        "review_required" | "defer"
+                    ) {
                         self.record_verification_evaluation(
                             action,
                             iteration,
@@ -1863,14 +1871,17 @@ impl Supervisor {
                                     .strategy_state
                                     .as_ref()
                                     .and_then(|state| state.verification_summary.clone())
-                                    .ok_or_else(|| anyhow::anyhow!("missing verification summary"))?,
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("missing verification summary")
+                                    })?,
                             )?,
                         );
                         return Ok(ExecutionOutcome::Blocked {
                             reason: if encounter_final_outcome == "defer" {
                                 "task.plan deferred pending clarifications or evidence".to_string()
                             } else {
-                                "task.plan requires operator review after encounter mediation".to_string()
+                                "task.plan requires operator review after encounter mediation"
+                                    .to_string()
                             },
                             failure_code: if encounter_final_outcome == "defer" {
                                 failure_code_verification_failed().to_string()

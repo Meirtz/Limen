@@ -305,7 +305,10 @@ impl LocalHarnessAdapter {
                     ("execution_surface".to_string(), json!("local_harness")),
                     ("local_harness".to_string(), json!(self.name())),
                     ("workspace_mode".to_string(), json!(capture.workspace_mode)),
-                    ("workspace_provenance".to_string(), capture.provenance.clone()),
+                    (
+                        "workspace_provenance".to_string(),
+                        capture.provenance.clone(),
+                    ),
                 ]),
             },
             external_refs: vec![

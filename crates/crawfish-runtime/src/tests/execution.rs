@@ -357,20 +357,20 @@ fi
 "#,
     )
     .await;
-    let manifest = mainline_task_planner_manifest(
-        "__missing_claude__",
-        &codex_script.display().to_string(),
+    let manifest =
+        mainline_task_planner_manifest("__missing_claude__", &codex_script.display().to_string())
+            .replace(
+                "encounter_policy = \"none\"",
+                "encounter_policy = \"risk_triggered\"",
+            );
+    let supervisor = build_supervisor_with_task_planner_manifest_and_config(
+        dir.path(),
+        manifest,
+        include_str!("../../../../examples/hero-swarm/Crawfish.toml").to_string(),
+        None,
     )
-    .replace("encounter_policy = \"none\"", "encounter_policy = \"risk_triggered\"");
-    let supervisor =
-        build_supervisor_with_task_planner_manifest_and_config(
-            dir.path(),
-            manifest,
-            include_str!("../../../../examples/hero-swarm/Crawfish.toml").to_string(),
-            None,
-        )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     let submitted = supervisor
         .submit_action(SubmitActionRequest {
@@ -472,20 +472,20 @@ EOF
 "#,
     )
     .await;
-    let manifest = mainline_task_planner_manifest(
-        "__missing_claude__",
-        &codex_script.display().to_string(),
+    let manifest =
+        mainline_task_planner_manifest("__missing_claude__", &codex_script.display().to_string())
+            .replace(
+                "encounter_policy = \"none\"",
+                "encounter_policy = \"risk_triggered\"",
+            );
+    let supervisor = build_supervisor_with_task_planner_manifest_and_config(
+        dir.path(),
+        manifest,
+        include_str!("../../../../examples/hero-swarm/Crawfish.toml").to_string(),
+        None,
     )
-    .replace("encounter_policy = \"none\"", "encounter_policy = \"risk_triggered\"");
-    let supervisor =
-        build_supervisor_with_task_planner_manifest_and_config(
-            dir.path(),
-            manifest,
-            include_str!("../../../../examples/hero-swarm/Crawfish.toml").to_string(),
-            None,
-        )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     let submitted = supervisor
         .submit_action(SubmitActionRequest {
