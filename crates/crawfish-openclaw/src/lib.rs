@@ -550,6 +550,7 @@ fn task_plan_artifact_from_result(action: &Action, text: &str, result: &Value) -
     let risks = extract_section_lines(text, "risk");
     let assumptions = extract_section_lines(text, "assumption");
     let test_suggestions = extract_section_lines(text, "test");
+    let needs_target_file_evidence = target_files.is_empty();
     let confidence_summary = result
         .get("confidence")
         .and_then(Value::as_str)
@@ -562,7 +563,7 @@ fn task_plan_artifact_from_result(action: &Action, text: &str, result: &Value) -
         .unwrap_or_else(|| "medium confidence: OpenClaw returned a proposal plan without an explicit confidence field".to_string());
 
     TaskPlanArtifact {
-        target_files,
+        target_files: target_files.clone(),
         ordered_steps: if ordered_steps.is_empty() {
             vec![TaskPlanStep {
                 title: "Review the returned proposal".to_string(),
@@ -584,12 +585,20 @@ fn task_plan_artifact_from_result(action: &Action, text: &str, result: &Value) -
         } else {
             assumptions
         },
+        clarifications_needed: Vec::new(),
+        required_approvals: Vec::new(),
+        required_evidence: if needs_target_file_evidence {
+            vec!["Confirm the exact target files before follow-on execution.".to_string()]
+        } else {
+            Vec::new()
+        },
         test_suggestions: if test_suggestions.is_empty() {
             vec!["Run deterministic checks and the narrowest relevant validation before acting on the proposal.".to_string()]
         } else {
             test_suggestions
         },
         confidence_summary,
+        recommended_disposition: crawfish_types::TaskPlanDisposition::ReviewRequired,
     }
 }
 

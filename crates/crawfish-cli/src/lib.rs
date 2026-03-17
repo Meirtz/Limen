@@ -632,18 +632,6 @@ fn init_workspace(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path.join(".crawfish/run"))?;
     write_if_missing(&path.join("Crawfish.toml"), ROOT_CONFIG_TEMPLATE)?;
     write_if_missing(
-        &path.join("agents/repo_indexer.toml"),
-        include_str!("../../../examples/hero-swarm/agents/repo_indexer.toml"),
-    )?;
-    write_if_missing(
-        &path.join("agents/repo_reviewer.toml"),
-        include_str!("../../../examples/hero-swarm/agents/repo_reviewer.toml"),
-    )?;
-    write_if_missing(
-        &path.join("agents/ci_triage.toml"),
-        include_str!("../../../examples/hero-swarm/agents/ci_triage.toml"),
-    )?;
-    write_if_missing(
         &path.join("agents/incident_enricher.toml"),
         include_str!("../../../examples/hero-swarm/agents/incident_enricher.toml"),
     )?;
@@ -1196,6 +1184,6 @@ socket_path = ".crawfish/run/crawfishd.sock"
 reconcile_interval_ms = 5000
 
 [evaluation]
-# Built-in profiles are resolved automatically for the current task-plan,
-# repo-review, and incident-enrichment reference paths.
+# Built-in profiles are resolved automatically for the local planning and
+# incident-enrichment reference paths.
 "#;

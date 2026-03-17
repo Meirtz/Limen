@@ -96,9 +96,9 @@ Crawfish does not compete by being one more reasoning loop. It competes by makin
 The current supported getting-started path is deliberately narrow:
 
 - local swarm control
-- `repo.index`, `repo.review`, `ci.triage`, `incident.enrich`
+- local-first `task.plan` under `verify_loop`
 - approval-gated local `workspace.patch.apply`
-- `task.plan` routed through `claude_code -> codex -> deterministic`
+- `incident.enrich` as the supporting workload
 - inspectable events, traces, evaluations, alerts, and restart recovery
 
 OpenClaw, A2A, treaties, federation packs, remote evidence, and remote follow-up remain in the repository as **experimental alpha** surfaces. They still compile and run under CI, but they are not the public happy path and they are not what `crawfish init` generates by default.
@@ -142,13 +142,12 @@ The current public happy path is **mainline alpha**: local swarm control, local 
 
 ### Mainline Alpha
 
-- `repo.index` emits `repo_index.json`
-- `repo.review` emits `review_findings.json` and `review_summary.md`
-- `ci.triage` emits `ci_triage.json` and `ci_triage_summary.md`
-- `incident.enrich` emits `incident_enrichment.json` and `incident_summary.md`
-- `workspace.patch.apply` performs local deterministic edits under approval, grants, leases, revocation, workspace locks, and audit receipts
 - `task.plan` runs as a **local-first** planning path: `claude_code -> codex -> deterministic`
 - `task.plan` also runs under the implemented `verify_loop`, so local harness output and deterministic fallback are both forced through the same bounded verifier
+- `workspace.patch.apply` performs local deterministic edits under approval, grants, leases, revocation, workspace locks, and audit receipts
+- `incident.enrich` emits `incident_enrichment.json` and `incident_summary.md`
+- `repo.review` and `ci.triage` remain implemented supporting workloads
+- `repo.index` remains internal plumbing for repo-aware workloads
 
 ### Experimental Alpha Surfaces
 
@@ -268,7 +267,6 @@ The supporting spec set lives in:
 - [`docs/spec/v0.1-plan.md`](docs/spec/v0.1-plan.md)
 - [`docs/spec/glossary.md`](docs/spec/glossary.md)
 
-The mainline benchmark harness lives under [`scripts/benchmarks/mainline_local.py`](scripts/benchmarks/mainline_local.py). It defaults to a reproducible deterministic path; local harness replay and compare runs are opt-in so the benchmark path does not depend on local CLI installation state.
 ## Quickstart
 
 The reference example lives under [`examples/hero-swarm/`](examples/hero-swarm/).
@@ -277,32 +275,68 @@ The reference example lives under [`examples/hero-swarm/`](examples/hero-swarm/)
 cargo test --workspace
 cargo run -p crawfish-cli --bin crawfish -- init ./sandbox
 cp examples/hero-swarm/Crawfish.toml ./sandbox/Crawfish.toml
-cp examples/hero-swarm/agents/*.toml ./sandbox/agents/
+cp examples/hero-swarm/agents/task_planner.toml ./sandbox/agents/
+cp examples/hero-swarm/agents/workspace_editor.toml ./sandbox/agents/
+cp examples/hero-swarm/agents/incident_enricher.toml ./sandbox/agents/
 cd sandbox
+mkdir -p src docs incident
+printf 'pub fn value() -> u32 { 42 }\n' > src/lib.rs
+cp ../examples/hero-swarm/data/sample-incident.log incident/sample-incident.log
+cp ../examples/hero-swarm/data/service-manifest.toml incident/service-manifest.toml
 cargo run -p crawfish-cli --bin crawfish -- run &
 sleep 1
 
 cargo run -p crawfish-cli --bin crawfish -- action submit \
   --target-agent task_planner \
   --capability task.plan \
-  --goal "propose a task plan" \
+  --goal "propose a rollout checklist" \
   --caller-owner local-dev \
   --inputs-json '{
     "workspace_root": ".",
-    "objective": "Plan a safe rollout for repo indexing validation",
+    "objective": "Prepare a rollout checklist for tightening local validation around src/lib.rs",
     "context_files": ["src/lib.rs"],
-    "desired_outputs": ["rollout checklist"]
+    "desired_outputs": ["rollout checklist", "operator handoff"]
   }' \
   --json
 
+cargo run -p crawfish-cli --bin crawfish -- inspect <action-id> --json
 cargo run -p crawfish-cli --bin crawfish -- action events <action-id> --json
 cargo run -p crawfish-cli --bin crawfish -- action trace <action-id> --json
 cargo run -p crawfish-cli --bin crawfish -- action evals <action-id> --json
 cargo run -p crawfish-cli --bin crawfish -- review list --json
-cargo run -p crawfish-cli --bin crawfish -- eval dataset list --json
-cargo run -p crawfish-cli --bin crawfish -- eval run task_plan_dataset --executor deterministic --json
-cargo run -p crawfish-cli --bin crawfish -- eval compare task_plan_dataset --left deterministic --right deterministic --json
-cargo run -p crawfish-cli --bin crawfish -- review list --kind pairwise --json
+
+cargo run -p crawfish-cli --bin crawfish -- action submit \
+  --target-agent workspace_editor \
+  --capability workspace.patch.apply \
+  --goal "materialize the rollout checklist" \
+  --caller-owner local-dev \
+  --workspace-write \
+  --mutating \
+  --inputs-json '{
+    "workspace_root": ".",
+    "edits": [{
+      "path": "docs/rollout-checklist.md",
+      "op": "create",
+      "contents": "# Rollout Checklist\n\n- Inspect src/lib.rs\n- Add validation coverage\n- Run targeted tests\n- Capture operator handoff\n"
+    }]
+  }' \
+  --json
+
+cargo run -p crawfish-cli --bin crawfish -- action list --phase awaiting_approval --json
+cargo run -p crawfish-cli --bin crawfish -- action approve <mutation-action-id> --approver local-dev --json
+
+cargo run -p crawfish-cli --bin crawfish -- action submit \
+  --target-agent incident_enricher \
+  --capability incident.enrich \
+  --goal "enrich local incident" \
+  --caller-owner local-dev \
+  --inputs-json '{
+    "service_name": "api",
+    "log_file": "incident/sample-incident.log",
+    "service_manifest_file": "incident/service-manifest.toml"
+  }' \
+  --json
+
 cargo run -p crawfish-cli --bin crawfish -- alert list --json
 ```
 

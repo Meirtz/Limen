@@ -41,7 +41,7 @@ The remote line is intentionally reduced to four ideas:
 That keeps the conceptual model visible without making the remote/federation stack the public onboarding center.
 ## Experimental Example
 
-The current remote/protocol example lives under [`examples/experimental/remote-swarm/`](/Users/meirtz/Documents/Tencent/CrawFish/examples/experimental/remote-swarm).
+The current remote/protocol example lives under [`../../examples/experimental/remote-swarm/`](../../examples/experimental/remote-swarm/).
 
 It demonstrates:
 
@@ -51,4 +51,4 @@ It demonstrates:
 - treaty and federation metadata
 - remote evidence and follow-up lineage
 
-Use [`examples/hero-swarm/`](/Users/meirtz/Documents/Tencent/CrawFish/examples/hero-swarm) for the mainline local path.
+Use [`../../examples/hero-swarm/`](../../examples/hero-swarm/) for the mainline local path.

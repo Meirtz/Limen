@@ -11,7 +11,7 @@ Use GitHub Issues for:
 
 Before opening an issue:
 
-- check the README and docs under [`../docs/spec/`](/Users/meirtz/Documents/Tencent/CrawFish/docs/spec/)
+- check the README and docs under [`../docs/spec/`](../docs/spec/)
 - verify you are using the latest code on `main` or the active development branch you are testing
 - include exact commands, config, and logs when reporting runtime problems
 
@@ -24,4 +24,4 @@ Before opening an issue:
 - exact CLI command
 - actual vs expected behavior
 
-For security issues, do not use public issues. Follow [`SECURITY.md`](/Users/meirtz/Documents/Tencent/CrawFish/.github/SECURITY.md).
+For security issues, do not use public issues. Follow [`SECURITY.md`](./SECURITY.md).

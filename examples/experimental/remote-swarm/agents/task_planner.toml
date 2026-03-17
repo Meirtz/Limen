@@ -24,6 +24,7 @@ evaluation_profile = "task_plan_default"
 [strategy_defaults."task.plan"]
 mode = "verify_loop"
 feedback_policy = "inject_reason"
+encounter_policy = "none"
 
 [strategy_defaults."task.plan".verification_spec]
 require_all = true
@@ -41,7 +42,7 @@ command = "claude"
 args = ["-p"]
 required_scopes = ["planning:read", "planning:propose"]
 lease_required = false
-workspace_policy = "crawfish_managed"
+workspace_policy = "ephemeral_proposal_copy"
 env_allowlist = ["PATH", "HOME", "XDG_CONFIG_HOME", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
 timeout_seconds = 90
 
@@ -53,7 +54,7 @@ command = "codex"
 args = ["exec", "--skip-git-repo-check"]
 required_scopes = ["planning:read", "planning:propose"]
 lease_required = false
-workspace_policy = "crawfish_managed"
+workspace_policy = "ephemeral_proposal_copy"
 env_allowlist = ["PATH", "HOME", "XDG_CONFIG_HOME", "CODEX_HOME", "OPENAI_API_KEY"]
 timeout_seconds = 90
 

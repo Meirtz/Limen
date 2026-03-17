@@ -909,6 +909,7 @@ pub enum LocalHarnessKind {
 pub enum LocalHarnessWorkspacePolicy {
     Inherit,
     CrawfishManaged,
+    EphemeralProposalCopy,
 }
 
 impl Default for LocalHarnessWorkspacePolicy {
@@ -1605,6 +1606,20 @@ impl Default for FeedbackPolicy {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskPlanEncounterPolicy {
+    None,
+    RiskTriggered,
+    Always,
+}
+
+impl Default for TaskPlanEncounterPolicy {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionStrategy {
     pub mode: ExecutionStrategyMode,
@@ -1614,6 +1629,8 @@ pub struct ExecutionStrategy {
     pub stop_budget: Option<StopBudget>,
     #[serde(default)]
     pub feedback_policy: FeedbackPolicy,
+    #[serde(default)]
+    pub encounter_policy: TaskPlanEncounterPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2603,6 +2620,20 @@ pub struct TaskPlanStep {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskPlanDisposition {
+    Admit,
+    ReviewRequired,
+    Defer,
+}
+
+impl Default for TaskPlanDisposition {
+    fn default() -> Self {
+        Self::ReviewRequired
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskPlanArtifact {
     #[serde(default)]
@@ -2614,8 +2645,16 @@ pub struct TaskPlanArtifact {
     #[serde(default)]
     pub assumptions: Vec<String>,
     #[serde(default)]
+    pub clarifications_needed: Vec<String>,
+    #[serde(default)]
+    pub required_approvals: Vec<String>,
+    #[serde(default)]
+    pub required_evidence: Vec<String>,
+    #[serde(default)]
     pub test_suggestions: Vec<String>,
     pub confidence_summary: String,
+    #[serde(default)]
+    pub recommended_disposition: TaskPlanDisposition,
 }
 
 pub type PatchPlanStep = TaskPlanStep;

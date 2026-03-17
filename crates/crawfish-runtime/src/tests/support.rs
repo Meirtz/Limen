@@ -115,9 +115,25 @@ pub(super) async fn build_supervisor_with_task_planner_manifest_and_config(
 }
 
 pub(super) async fn build_supervisor(dir: &Path) -> anyhow::Result<Arc<Supervisor>> {
-    build_supervisor_with_config(
+    let local_plan_script = write_executable_script(
         dir,
+        "task-plan-local.sh",
+        r#"#!/bin/sh
+cat <<'EOF'
+{"target_files":["src/lib.rs"],"ordered_steps":[{"title":"Inspect scope","detail":"Review the local runtime request and the current source context."},{"title":"Draft governed plan","detail":"Produce a proposal-only plan that covers the requested outcomes and preserves operator review before mutation."}],"risks":["The plan still requires operator review before any mutation path is used."],"assumptions":["This local harness is proposal-only and must not edit workspace files."],"clarifications_needed":[],"required_approvals":["Operator approval is required before mutation."],"required_evidence":[],"test_suggestions":["Confirm the proposal covers the requested plan and risk outputs."],"confidence_summary":"medium confidence: local runtime context and requested outputs are available","recommended_disposition":"review_required"}
+EOF
+"#,
+    )
+    .await;
+    let manifest = mainline_task_planner_manifest(
+        &local_plan_script.display().to_string(),
+        &local_plan_script.display().to_string(),
+    );
+    build_supervisor_with_task_planner_manifest_and_config(
+        dir,
+        manifest,
         include_str!("../../../../examples/hero-swarm/Crawfish.toml").to_string(),
+        None,
     )
     .await
 }
@@ -132,7 +148,7 @@ pub(super) async fn build_supervisor_with_mcp(
 }
 
 pub(super) async fn build_supervisor_with_openclaw(dir: &Path) -> anyhow::Result<Arc<Supervisor>> {
-    let manifest = local_task_planner_manifest(
+    let manifest = openclaw_task_planner_manifest(
         "__test_missing_claude__",
         "__test_missing_codex__",
         "ws://127.0.0.1:9988/gateway",
@@ -150,7 +166,7 @@ pub(super) async fn build_supervisor_with_openclaw_gateway(
     dir: &Path,
     gateway_url: &str,
 ) -> anyhow::Result<Arc<Supervisor>> {
-    let manifest = local_task_planner_manifest(
+    let manifest = openclaw_task_planner_manifest(
         "__test_missing_claude__",
         "__test_missing_codex__",
         gateway_url,
@@ -300,6 +316,7 @@ mutation_mode = "proposal_only"
 [strategy_defaults."task.plan"]
 mode = "verify_loop"
 feedback_policy = "inject_reason"
+encounter_policy = "none"
 
 [strategy_defaults."task.plan".verification_spec]
 require_all = true
@@ -317,7 +334,7 @@ command = "{claude_command}"
 args = []
 required_scopes = ["planning:read", "planning:propose"]
 lease_required = false
-workspace_policy = "crawfish_managed"
+workspace_policy = "ephemeral_proposal_copy"
 env_allowlist = ["PATH", "HOME", "CODEX_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
 timeout_seconds = 5
 
@@ -329,7 +346,7 @@ command = "{codex_command}"
 args = ["exec", "--skip-git-repo-check"]
 required_scopes = ["planning:read", "planning:propose"]
 lease_required = false
-workspace_policy = "crawfish_managed"
+workspace_policy = "ephemeral_proposal_copy"
 env_allowlist = ["PATH", "HOME", "CODEX_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
 timeout_seconds = 5
 
@@ -354,6 +371,146 @@ treaty_pack = "remote_task_planning"
 required_scopes = ["planning:read", "planning:propose"]
 streaming_mode = "prefer_streaming"
 allow_in_task_auth = false
+"#
+    )
+}
+
+pub(super) fn mainline_task_planner_manifest(claude_command: &str, codex_command: &str) -> String {
+    format!(
+        r#"id = "task_planner"
+role = "task_planner"
+trust_domain = "same_owner_local"
+capabilities = ["task.plan"]
+exposed_capabilities = ["task.plan"]
+default_data_boundaries = ["owner_local"]
+
+[owner]
+kind = "human"
+id = "local-dev"
+display_name = "Local Developer"
+
+[contract_defaults.execution]
+preferred_harnesses = ["claude_code", "codex"]
+fallback_chain = ["deterministic"]
+
+[contract_defaults.safety]
+approval_policy = "on_mutation"
+mutation_mode = "proposal_only"
+
+[strategy_defaults."task.plan"]
+mode = "verify_loop"
+feedback_policy = "inject_reason"
+encounter_policy = "none"
+
+[strategy_defaults."task.plan".verification_spec]
+require_all = true
+on_failure = "retry_with_feedback"
+checks = []
+
+[strategy_defaults."task.plan".stop_budget]
+max_iterations = 3
+
+[[adapters]]
+adapter = "local_harness"
+capability = "task.plan"
+harness = "claude_code"
+command = "{claude_command}"
+args = []
+required_scopes = ["planning:read", "planning:propose"]
+lease_required = false
+workspace_policy = "ephemeral_proposal_copy"
+env_allowlist = ["PATH", "HOME", "CODEX_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+timeout_seconds = 5
+
+[[adapters]]
+adapter = "local_harness"
+capability = "task.plan"
+harness = "codex"
+command = "{codex_command}"
+args = ["exec", "--skip-git-repo-check"]
+required_scopes = ["planning:read", "planning:propose"]
+lease_required = false
+workspace_policy = "ephemeral_proposal_copy"
+env_allowlist = ["PATH", "HOME", "CODEX_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+timeout_seconds = 5
+"#
+    )
+}
+
+pub(super) fn openclaw_task_planner_manifest(
+    claude_command: &str,
+    codex_command: &str,
+    openclaw_gateway_url: &str,
+) -> String {
+    format!(
+        r#"id = "task_planner"
+role = "task_planner"
+trust_domain = "same_owner_local"
+capabilities = ["task.plan"]
+exposed_capabilities = ["task.plan"]
+default_data_boundaries = ["owner_local"]
+
+[owner]
+kind = "human"
+id = "local-dev"
+display_name = "Local Developer"
+
+[contract_defaults.execution]
+preferred_harnesses = ["claude_code", "codex", "openclaw"]
+fallback_chain = ["deterministic"]
+
+[contract_defaults.safety]
+approval_policy = "on_mutation"
+mutation_mode = "proposal_only"
+
+[strategy_defaults."task.plan"]
+mode = "verify_loop"
+feedback_policy = "inject_reason"
+encounter_policy = "none"
+
+[strategy_defaults."task.plan".verification_spec]
+require_all = true
+on_failure = "retry_with_feedback"
+checks = []
+
+[strategy_defaults."task.plan".stop_budget]
+max_iterations = 3
+
+[[adapters]]
+adapter = "local_harness"
+capability = "task.plan"
+harness = "claude_code"
+command = "{claude_command}"
+args = []
+required_scopes = ["planning:read", "planning:propose"]
+lease_required = false
+workspace_policy = "ephemeral_proposal_copy"
+env_allowlist = ["PATH", "HOME", "CODEX_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+timeout_seconds = 5
+
+[[adapters]]
+adapter = "local_harness"
+capability = "task.plan"
+harness = "codex"
+command = "{codex_command}"
+args = ["exec", "--skip-git-repo-check"]
+required_scopes = ["planning:read", "planning:propose"]
+lease_required = false
+workspace_policy = "ephemeral_proposal_copy"
+env_allowlist = ["PATH", "HOME", "CODEX_HOME", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+timeout_seconds = 5
+
+[[adapters]]
+adapter = "openclaw"
+gateway_url = "{openclaw_gateway_url}"
+auth_ref = "OPENCLAW_GATEWAY_TOKEN"
+target_agent = "task-planner"
+session_mode = "ephemeral"
+caller_owner_mapping = "required"
+default_trust_domain = "same_device_foreign_owner"
+required_scopes = ["planning:read", "planning:propose"]
+lease_required = false
+workspace_policy = "crawfish_managed"
 "#
     )
 }

@@ -7,6 +7,22 @@ pub(crate) fn jurisdiction_class_for_action(
     if action
         .selected_executor
         .as_deref()
+        .map(is_local_harness_executor)
+        .unwrap_or(false)
+    {
+        return match action
+            .counterparty_refs
+            .first()
+            .map(|counterparty| &counterparty.trust_domain)
+        {
+            Some(TrustDomain::SameDeviceForeignOwner) => JurisdictionClass::SameDeviceForeignOwner,
+            _ => JurisdictionClass::SameOwnerLocal,
+        };
+    }
+
+    if action
+        .selected_executor
+        .as_deref()
         .map(is_remote_harness_executor)
         .unwrap_or(false)
     {
@@ -41,6 +57,24 @@ pub(crate) fn interaction_model_for_action(
         .unwrap_or(false)
     {
         return crawfish_types::InteractionModel::RemoteAgent;
+    }
+
+    if action
+        .selected_executor
+        .as_deref()
+        .map(is_local_harness_executor)
+        .unwrap_or(false)
+    {
+        return match action
+            .counterparty_refs
+            .first()
+            .map(|counterparty| &counterparty.trust_domain)
+        {
+            Some(TrustDomain::SameDeviceForeignOwner) => {
+                crawfish_types::InteractionModel::SameDeviceMultiOwner
+            }
+            _ => crawfish_types::InteractionModel::SameOwnerSwarm,
+        };
     }
 
     if action

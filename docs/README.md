@@ -49,13 +49,12 @@ The public happy path is the **mainline alpha** example under `examples/hero-swa
 The live alpha example swarm is tracked under:
 
 - [`../examples/hero-swarm/Crawfish.toml`](../examples/hero-swarm/Crawfish.toml)
-- [`../examples/hero-swarm/agents/repo_indexer.toml`](../examples/hero-swarm/agents/repo_indexer.toml)
-- [`../examples/hero-swarm/agents/repo_reviewer.toml`](../examples/hero-swarm/agents/repo_reviewer.toml)
-- [`../examples/hero-swarm/agents/ci_triage.toml`](../examples/hero-swarm/agents/ci_triage.toml)
+- [`../examples/hero-swarm/demo.sh`](../examples/hero-swarm/demo.sh)
+- [`../examples/hero-swarm/agents/incident_enricher.toml`](../examples/hero-swarm/agents/incident_enricher.toml)
 - [`../examples/hero-swarm/agents/task_planner.toml`](../examples/hero-swarm/agents/task_planner.toml)
 - [`../examples/hero-swarm/agents/workspace_editor.toml`](../examples/hero-swarm/agents/workspace_editor.toml)
 
-That example is the current implementation reference for local swarm control, deterministic and local-harness execution, approval-gated local mutation, and inspectable operator state.
+That example is the current implementation reference for a local planning path under `verify_loop`, approval-gated mutation, one supporting workload, and inspectable operator state.
 
 Experimental alpha surfaces are documented separately in:
 

@@ -37,7 +37,9 @@ use crawfish_core::{
     SubmittedAction, SupervisorControl, SwarmStatusResponse, TreatyDetailResponse,
     TreatyListResponse,
 };
-use crawfish_harness_local::{LocalHarnessAdapter, LocalHarnessError};
+use crawfish_harness_local::{
+    LocalHarnessAdapter, LocalHarnessError, TaskPlanReviewDecision, TaskPlanReviewPayload,
+};
 use crawfish_mcp::McpAdapter;
 use crawfish_openclaw::{OpenClawAdapter, OpenClawError};
 use crawfish_store_sqlite::SqliteStore;
@@ -58,8 +60,9 @@ use crawfish_types::{
     RemoteFollowupRequest, RemoteFollowupStatus, RemoteOutcomeDisposition, RemoteResultAcceptance,
     RemoteReviewDisposition, RemoteReviewReason, RemoteStateDisposition, RequesterKind,
     ReviewQueueItem, ReviewQueueKind, ReviewQueueStatus, ScorecardCriterion,
-    ScorecardCriterionKind, ScorecardSpec, StrategyCheckpointState, TraceBundle, TrustDomain,
-    VerificationStatus, VerificationSummary, VerifyLoopFailureMode, WorkspaceEdit, WorkspaceEditOp,
+    ScorecardCriterionKind, ScorecardSpec, StrategyCheckpointState, TaskPlanDisposition,
+    TraceBundle, TrustDomain, VerificationStatus, VerificationSummary, VerifyLoopFailureMode,
+    WorkspaceEdit, WorkspaceEditOp,
 };
 use hero::{
     load_json_artifact, required_input_string, CiTriageDeterministicExecutor,
@@ -273,4 +276,7 @@ struct TaskPlanVerificationResult {
     passed: bool,
     summary: VerificationSummary,
     feedback: Option<String>,
+    recommended_disposition: TaskPlanDisposition,
+    artifact: Option<crawfish_types::TaskPlanArtifact>,
+    failures: Vec<String>,
 }

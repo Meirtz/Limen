@@ -89,12 +89,110 @@ pub fn compile_execution_plan(
 
 fn merge_contracts(base: &ExecutionContract, override_: &ExecutionContract) -> ExecutionContract {
     let mut merged = base.clone();
-    merged.delivery = override_.delivery.clone();
-    merged.execution = override_.execution.clone();
-    merged.safety = override_.safety.clone();
-    merged.quality = override_.quality.clone();
-    merged.recovery = override_.recovery.clone();
+    merge_delivery_contract(&mut merged.delivery, &override_.delivery);
+    merge_execution_policy(&mut merged.execution, &override_.execution);
+    merge_safety_policy(&mut merged.safety, &override_.safety);
+    merge_quality_policy(&mut merged.quality, &override_.quality);
+    merge_recovery_policy(&mut merged.recovery, &override_.recovery);
     merged
+}
+
+fn merge_delivery_contract(base: &mut DeliveryContract, override_: &DeliveryContract) {
+    if override_.deadline_ms.is_some() {
+        base.deadline_ms = override_.deadline_ms;
+    }
+    if override_.freshness_ttl_ms.is_some() {
+        base.freshness_ttl_ms = override_.freshness_ttl_ms;
+    }
+    if override_.required_ack != DeliveryContract::default().required_ack {
+        base.required_ack = override_.required_ack;
+    }
+    if override_.liveliness_window_ms.is_some() {
+        base.liveliness_window_ms = override_.liveliness_window_ms;
+    }
+}
+
+fn merge_execution_policy(base: &mut ExecutionPolicy, override_: &ExecutionPolicy) {
+    if override_.max_cost_usd.is_some() {
+        base.max_cost_usd = override_.max_cost_usd;
+    }
+    if override_.max_tokens.is_some() {
+        base.max_tokens = override_.max_tokens;
+    }
+    if override_.model_class.is_some() {
+        base.model_class = override_.model_class.clone();
+    }
+    if !override_.preferred_harnesses.is_empty() {
+        base.preferred_harnesses = override_.preferred_harnesses.clone();
+    }
+    if !override_.fallback_chain.is_empty() {
+        base.fallback_chain = override_.fallback_chain.clone();
+    }
+    if override_.retry_budget != ExecutionPolicy::default().retry_budget {
+        base.retry_budget = override_.retry_budget;
+    }
+}
+
+fn merge_safety_policy(base: &mut SafetyPolicy, override_: &SafetyPolicy) {
+    if !override_.tool_scope.is_empty() {
+        base.tool_scope = override_.tool_scope.clone();
+    }
+    if override_.approval_policy != SafetyPolicy::default().approval_policy {
+        base.approval_policy = override_.approval_policy.clone();
+    }
+    if override_.mutation_mode != SafetyPolicy::default().mutation_mode {
+        base.mutation_mode = override_.mutation_mode.clone();
+    }
+    if !override_.data_zone.is_empty() && override_.data_zone != SafetyPolicy::default().data_zone {
+        base.data_zone = override_.data_zone.clone();
+    }
+    if override_.secret_policy != SafetyPolicy::default().secret_policy {
+        base.secret_policy = override_.secret_policy.clone();
+    }
+}
+
+fn merge_quality_policy(base: &mut QualityPolicy, override_: &QualityPolicy) {
+    if !override_.quality_class.is_empty()
+        && override_.quality_class != QualityPolicy::default().quality_class
+    {
+        base.quality_class = override_.quality_class.clone();
+    }
+    if override_.evaluation_profile.is_some() {
+        base.evaluation_profile = override_.evaluation_profile.clone();
+    }
+    if override_.evaluation_hook.is_some() {
+        base.evaluation_hook = override_.evaluation_hook.clone();
+    }
+    if override_.minimum_confidence.is_some() {
+        base.minimum_confidence = override_.minimum_confidence;
+    }
+    if override_.human_review_rule.is_some() {
+        base.human_review_rule = override_.human_review_rule.clone();
+    }
+}
+
+fn merge_recovery_policy(base: &mut RecoveryPolicy, override_: &RecoveryPolicy) {
+    if override_.checkpoint_interval != RecoveryPolicy::default().checkpoint_interval {
+        base.checkpoint_interval = override_.checkpoint_interval.clone();
+    }
+    if override_.resumability != RecoveryPolicy::default().resumability {
+        base.resumability = override_.resumability.clone();
+    }
+    if override_.fallback_behavior != RecoveryPolicy::default().fallback_behavior {
+        base.fallback_behavior = override_.fallback_behavior.clone();
+    }
+    if !override_.continuity_preference.is_empty() {
+        base.continuity_preference = override_.continuity_preference.clone();
+    }
+    if !override_.deterministic_fallbacks.is_empty() {
+        base.deterministic_fallbacks = override_.deterministic_fallbacks.clone();
+    }
+    if override_.human_handoff_policy != RecoveryPolicy::default().human_handoff_policy {
+        base.human_handoff_policy = override_.human_handoff_policy.clone();
+    }
+    if override_.dead_letter_policy != RecoveryPolicy::default().dead_letter_policy {
+        base.dead_letter_policy = override_.dead_letter_policy.clone();
+    }
 }
 
 fn apply_patch(contract: &mut ExecutionContract, patch: &ExecutionContractPatch) {
@@ -263,6 +361,7 @@ mod tests {
                 }),
                 stop_budget: None,
                 feedback_policy: FeedbackPolicy::InjectReason,
+                encounter_policy: crawfish_types::TaskPlanEncounterPolicy::None,
             },
         );
 
@@ -277,6 +376,7 @@ mod tests {
                 verification_spec: None,
                 stop_budget: None,
                 feedback_policy: FeedbackPolicy::AppendReport,
+                encounter_policy: crawfish_types::TaskPlanEncounterPolicy::None,
             }),
         )
         .unwrap();

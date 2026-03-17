@@ -6,7 +6,7 @@ Crawfish is a public Rust-first alpha project. We want serious maintenance disci
 
 ## Before You Open A PR
 
-- Read [`../README.md`](/Users/meirtz/Documents/Tencent/CrawFish/README.md) and the specs under [`../docs/spec/`](/Users/meirtz/Documents/Tencent/CrawFish/docs/spec/).
+- Read [`../README.md`](../README.md) and the specs under [`../docs/spec/`](../docs/spec/).
 - Prefer small, reviewable changes.
 - Open an issue first for major behavior changes, public API changes, or architecture shifts.
 
@@ -28,11 +28,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Documentation And Changelog Discipline
 
-- If a change is user-visible, update [`../docs/project/CHANGELOG.md`](/Users/meirtz/Documents/Tencent/CrawFish/docs/project/CHANGELOG.md).
+- If a change is user-visible, update [`../docs/project/CHANGELOG.md`](../docs/project/CHANGELOG.md).
 - If a change affects behavior in the runnable example, update these in the same PR:
-  - [`../README.md`](/Users/meirtz/Documents/Tencent/CrawFish/README.md)
-  - [`../docs/spec/v0.1-plan.md`](/Users/meirtz/Documents/Tencent/CrawFish/docs/spec/v0.1-plan.md)
-  - [`../examples/hero-swarm/Crawfish.toml`](/Users/meirtz/Documents/Tencent/CrawFish/examples/hero-swarm/Crawfish.toml)
+  - [`../README.md`](../README.md)
+  - [`../docs/spec/v0.1-plan.md`](../docs/spec/v0.1-plan.md)
+  - [`../examples/hero-swarm/Crawfish.toml`](../examples/hero-swarm/Crawfish.toml)
 - If a breaking alpha change affects users, include a short migration note in the changelog and docs.
 
 ## Public Surface Expectations

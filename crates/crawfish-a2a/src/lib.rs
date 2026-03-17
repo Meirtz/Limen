@@ -813,8 +813,16 @@ fn task_plan_artifact_from_text(action: &Action, text: &str) -> TaskPlanArtifact
         .and_then(Value::as_str)
         .or_else(|| action.inputs.get("task").and_then(Value::as_str))
         .unwrap_or(&action.goal.summary);
-    let target_files = string_array(&action.inputs, "context_files");
+    let target_files = {
+        let context_files = string_array(&action.inputs, "context_files");
+        if context_files.is_empty() {
+            string_array(&action.inputs, "files_of_interest")
+        } else {
+            context_files
+        }
+    };
     let desired_outputs = string_array(&action.inputs, "desired_outputs");
+    let needs_target_file_evidence = target_files.is_empty();
     let mut ordered_steps = text
         .lines()
         .filter_map(|line| {
@@ -854,6 +862,13 @@ fn task_plan_artifact_from_text(action: &Action, text: &str) -> TaskPlanArtifact
         ordered_steps,
         risks: vec!["Remote planning output still requires local verification.".to_string()],
         assumptions: vec!["This capability remains proposal-only in Crawfish.".to_string()],
+        clarifications_needed: Vec::new(),
+        required_approvals: Vec::new(),
+        required_evidence: if needs_target_file_evidence {
+            vec!["Confirm the affected files locally before executing follow-on work.".to_string()]
+        } else {
+            Vec::new()
+        },
         test_suggestions: if desired_outputs.is_empty() {
             vec!["Review the plan against expected artifacts and constraints.".to_string()]
         } else {
@@ -863,6 +878,7 @@ fn task_plan_artifact_from_text(action: &Action, text: &str) -> TaskPlanArtifact
                 .collect()
         },
         confidence_summary: truncate_summary(text),
+        recommended_disposition: crawfish_types::TaskPlanDisposition::ReviewRequired,
     }
 }
 

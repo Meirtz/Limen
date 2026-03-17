@@ -405,7 +405,18 @@ impl DeterministicExecutor for TaskPlannerDeterministicExecutor {
             &desired_outputs,
             verification_feedback.as_deref(),
         );
+        let clarifications_needed =
+            task_plan_clarifications(action, &desired_outputs, &constraints);
+        let required_approvals = task_plan_required_approvals(&target_files);
+        let required_evidence = task_plan_required_evidence(verification_feedback.as_deref());
         let test_suggestions = task_plan_test_suggestions(&target_files, &desired_outputs);
+        let confidence_summary = task_plan_confidence_summary(&target_files, &constraints);
+        let recommended_disposition = task_plan_recommended_disposition(
+            &clarifications_needed,
+            &required_approvals,
+            &required_evidence,
+            &confidence_summary,
+        );
 
         let artifact = TaskPlanArtifact {
             target_files: target_files.clone(),
@@ -418,8 +429,12 @@ impl DeterministicExecutor for TaskPlannerDeterministicExecutor {
             ),
             risks,
             assumptions,
+            clarifications_needed,
+            required_approvals,
+            required_evidence,
             test_suggestions,
-            confidence_summary: task_plan_confidence_summary(&target_files, &constraints),
+            confidence_summary,
+            recommended_disposition,
         };
 
         let json_ref =
@@ -1118,12 +1133,67 @@ fn task_plan_test_suggestions(target_files: &[String], desired_outputs: &[String
     suggestions
 }
 
+fn task_plan_clarifications(
+    action: &Action,
+    desired_outputs: &[String],
+    _constraints: &[String],
+) -> Vec<String> {
+    let mut clarifications = Vec::new();
+    if desired_outputs.is_empty() {
+        clarifications.push(
+            "Confirm the operator-visible deliverable expected from the follow-on patch."
+                .to_string(),
+        );
+    }
+    if optional_input_string(action, "background").is_none() && desired_outputs.is_empty() {
+        clarifications.push(
+            "Provide additional repository context if the plan should reach beyond the obvious touch points."
+                .to_string(),
+        );
+    }
+    clarifications
+}
+
+fn task_plan_required_approvals(target_files: &[String]) -> Vec<String> {
+    if target_files.iter().any(|file| is_risky_path(file)) {
+        vec![
+            "Obtain operator approval before mutating risky configuration, auth, or policy paths."
+                .to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn task_plan_required_evidence(_verification_feedback: Option<&str>) -> Vec<String> {
+    Vec::new()
+}
+
 fn task_plan_confidence_summary(target_files: &[String], constraints: &[String]) -> String {
     match (target_files.is_empty(), constraints.is_empty()) {
         (false, false) => "medium confidence: likely target files and constraints are both available".to_string(),
         (false, true) => "medium-low confidence: target files are available, but the request lacks explicit constraints".to_string(),
         (true, false) => "medium-low confidence: constraints exist, but file targeting is heuristic".to_string(),
         (true, true) => "low confidence: both file targeting and constraints are heuristic".to_string(),
+    }
+}
+
+fn task_plan_recommended_disposition(
+    clarifications_needed: &[String],
+    required_approvals: &[String],
+    required_evidence: &[String],
+    confidence_summary: &str,
+) -> crawfish_types::TaskPlanDisposition {
+    let lowered_confidence = confidence_summary.to_lowercase();
+    if !clarifications_needed.is_empty() || !required_evidence.is_empty() {
+        crawfish_types::TaskPlanDisposition::Defer
+    } else if !required_approvals.is_empty()
+        || lowered_confidence.starts_with("low confidence")
+        || lowered_confidence.starts_with("medium-low confidence")
+    {
+        crawfish_types::TaskPlanDisposition::ReviewRequired
+    } else {
+        crawfish_types::TaskPlanDisposition::Admit
     }
 }
 
@@ -1186,6 +1256,45 @@ fn build_task_plan_markdown(
     );
 
     markdown.push(String::new());
+    markdown.push("## Clarifications Needed".to_string());
+    if artifact.clarifications_needed.is_empty() {
+        markdown.push("- None.".to_string());
+    } else {
+        markdown.extend(
+            artifact
+                .clarifications_needed
+                .iter()
+                .map(|entry| format!("- {entry}")),
+        );
+    }
+
+    markdown.push(String::new());
+    markdown.push("## Required Approvals".to_string());
+    if artifact.required_approvals.is_empty() {
+        markdown.push("- None.".to_string());
+    } else {
+        markdown.extend(
+            artifact
+                .required_approvals
+                .iter()
+                .map(|entry| format!("- {entry}")),
+        );
+    }
+
+    markdown.push(String::new());
+    markdown.push("## Required Evidence".to_string());
+    if artifact.required_evidence.is_empty() {
+        markdown.push("- None.".to_string());
+    } else {
+        markdown.extend(
+            artifact
+                .required_evidence
+                .iter()
+                .map(|entry| format!("- {entry}")),
+        );
+    }
+
+    markdown.push(String::new());
     markdown.push("## Suggested Validation".to_string());
     markdown.extend(
         artifact
@@ -1196,6 +1305,13 @@ fn build_task_plan_markdown(
 
     markdown.push(String::new());
     markdown.push(format!("Confidence: {}", artifact.confidence_summary));
+    markdown.push(format!(
+        "Recommended disposition: {}",
+        serde_json::to_value(&artifact.recommended_disposition)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "unknown".to_string())
+    ));
 
     markdown.join("\n")
 }

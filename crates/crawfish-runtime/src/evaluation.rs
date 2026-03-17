@@ -151,11 +151,37 @@ pub(crate) fn builtin_scorecards() -> BTreeMap<String, ScorecardSpec> {
                         ..ScorecardCriterion::default()
                     },
                     ScorecardCriterion {
+                        id: "test_suggestions".to_string(),
+                        title: "test suggestions populated".to_string(),
+                        kind: ScorecardCriterionKind::JsonFieldNonempty,
+                        artifact_name: Some("task_plan.json".to_string()),
+                        field_path: Some("test_suggestions".to_string()),
+                        source_path: None,
+                        min_len: None,
+                        checkpoint: None,
+                        incident_code: None,
+                        weight: 1,
+                        ..ScorecardCriterion::default()
+                    },
+                    ScorecardCriterion {
                         id: "confidence_summary".to_string(),
                         title: "confidence summary populated".to_string(),
                         kind: ScorecardCriterionKind::JsonFieldNonempty,
                         artifact_name: Some("task_plan.json".to_string()),
                         field_path: Some("confidence_summary".to_string()),
+                        source_path: None,
+                        min_len: None,
+                        checkpoint: None,
+                        incident_code: None,
+                        weight: 1,
+                        ..ScorecardCriterion::default()
+                    },
+                    ScorecardCriterion {
+                        id: "recommended_disposition".to_string(),
+                        title: "recommended disposition populated".to_string(),
+                        kind: ScorecardCriterionKind::JsonFieldNonempty,
+                        artifact_name: Some("task_plan.json".to_string()),
+                        field_path: Some("recommended_disposition".to_string()),
                         source_path: None,
                         min_len: None,
                         checkpoint: None,
@@ -170,14 +196,41 @@ pub(crate) fn builtin_scorecards() -> BTreeMap<String, ScorecardSpec> {
                         artifact_name: Some("task_plan.json".to_string()),
                         json_schema: Some(serde_json::json!({
                             "type": "object",
-                            "required": ["ordered_steps", "risks", "assumptions", "confidence_summary"],
+                            "required": ["ordered_steps", "risks", "assumptions", "clarifications_needed", "required_approvals", "required_evidence", "test_suggestions", "confidence_summary", "recommended_disposition"],
                             "properties": {
-                                "ordered_steps": {"type": "array"},
-                                "risks": {"type": "array"},
-                                "assumptions": {"type": "array"},
-                                "confidence_summary": {"type": "string"}
+                                "target_files": {"type": "array", "items": {"type": "string"}},
+                                "ordered_steps": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["title", "detail"],
+                                        "properties": {
+                                            "title": {"type": "string", "minLength": 1},
+                                            "detail": {"type": "string", "minLength": 1}
+                                        }
+                                    }
+                                },
+                                "risks": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                                "assumptions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                                "clarifications_needed": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                                "required_approvals": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                                "required_evidence": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                                "test_suggestions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                                "confidence_summary": {"type": "string", "minLength": 1},
+                                "recommended_disposition": {"type": "string", "enum": ["admit", "review_required", "defer"]}
                             }
                         })),
+                        weight: 2,
+                        ..ScorecardCriterion::default()
+                    },
+                    ScorecardCriterion {
+                        id: "admit_ready_disposition".to_string(),
+                        title: "mainline task plans are directly admissible only when disposition is admit".to_string(),
+                        kind: ScorecardCriterionKind::FieldEquals,
+                        artifact_name: Some("task_plan.json".to_string()),
+                        field_path: Some("recommended_disposition".to_string()),
+                        expected_value: Some(serde_json::json!("admit")),
                         weight: 2,
                         ..ScorecardCriterion::default()
                     },
@@ -333,18 +386,32 @@ pub(crate) fn builtin_scorecards() -> BTreeMap<String, ScorecardSpec> {
                         ..ScorecardCriterion::default()
                     },
                     ScorecardCriterion {
+                        id: "recommended_disposition".to_string(),
+                        title: "recommended disposition populated".to_string(),
+                        kind: ScorecardCriterionKind::JsonFieldNonempty,
+                        artifact_name: Some("task_plan.json".to_string()),
+                        field_path: Some("recommended_disposition".to_string()),
+                        weight: 1,
+                        ..ScorecardCriterion::default()
+                    },
+                    ScorecardCriterion {
                         id: "task_plan_schema".to_string(),
                         title: "task plan JSON matches the expected schema".to_string(),
                         kind: ScorecardCriterionKind::JsonSchemaValid,
                         artifact_name: Some("task_plan.json".to_string()),
                         json_schema: Some(serde_json::json!({
                             "type": "object",
-                            "required": ["ordered_steps", "risks", "assumptions", "confidence_summary"],
+                            "required": ["ordered_steps", "risks", "assumptions", "clarifications_needed", "required_approvals", "required_evidence", "test_suggestions", "confidence_summary", "recommended_disposition"],
                             "properties": {
-                                "ordered_steps": {"type": "array"},
-                                "risks": {"type": "array"},
-                                "assumptions": {"type": "array"},
-                                "confidence_summary": {"type": "string"}
+                                "ordered_steps": {"type": "array", "minItems": 2},
+                                "risks": {"type": "array", "minItems": 1},
+                                "assumptions": {"type": "array", "minItems": 1},
+                                "clarifications_needed": {"type": "array"},
+                                "required_approvals": {"type": "array"},
+                                "required_evidence": {"type": "array"},
+                                "test_suggestions": {"type": "array", "minItems": 1},
+                                "confidence_summary": {"type": "string", "minLength": 1},
+                                "recommended_disposition": {"type": "string", "enum": ["admit", "review_required", "defer"]}
                             }
                         })),
                         weight: 2,
@@ -2859,6 +2926,7 @@ impl Supervisor {
             verification_spec: None,
             stop_budget: None,
             feedback_policy: crawfish_types::FeedbackPolicy::default(),
+            encounter_policy: crawfish_types::TaskPlanEncounterPolicy::None,
         });
         let (preferred_harnesses, fallback_chain) = replay_routes_for_executor(&run.executor);
         action.contract.execution.fallback_chain = fallback_chain;

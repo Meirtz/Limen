@@ -500,12 +500,7 @@ async fn pairwise_compare_flags_regression_without_emitting_production_alert_eve
         "claude-compare.sh",
         r#"#!/bin/sh
 cat <<'EOF'
-- Review the task objective and the relevant context files.
-- Produce a rollout checklist and the operator handoff notes.
-Risk: local executor drift may still require human review.
-Assumption: the task remains proposal-only.
-Test: verify the desired outputs appear in the plan.
-Confidence: high confidence with the rollout checklist included
+{"target_files":["src/lib.rs","tests/lib_test.rs"],"ordered_steps":[{"title":"Review task objective","detail":"Review the task objective and the relevant context files."},{"title":"Draft rollout checklist","detail":"Produce a rollout checklist and operator handoff notes for the requested change."},{"title":"Plan validation","detail":"Verify the desired outputs appear in the plan and related validation steps."}],"risks":["Local executor drift may still require operator inspection before any mutation path."],"assumptions":["The task remains proposal-only."],"clarifications_needed":[],"required_approvals":[],"required_evidence":[],"test_suggestions":["Verify the desired outputs appear in the plan."],"confidence_summary":"high confidence with the rollout checklist included","recommended_disposition":"admit"}
 EOF
 "#,
     )
@@ -515,9 +510,7 @@ EOF
         "codex-compare.sh",
         r#"#!/bin/sh
 cat <<'EOF'
-- Sketch a rough outline.
-Risk: the proposal may omit the requested outputs.
-Confidence: low confidence
+{"target_files":[],"ordered_steps":[{"title":"Sketch outline","detail":"Sketch a rough outline of the intended work."},{"title":"Await clarification","detail":"Wait for more detail before treating the plan as admissible."}],"risks":["The proposal may still miss critical context."],"assumptions":["The initial outline is incomplete."],"clarifications_needed":["Clarify the missing scope details."],"required_approvals":[],"required_evidence":["Collect the missing evidence before follow-on execution."],"test_suggestions":["Re-check the plan after clarification."],"confidence_summary":"low confidence","recommended_disposition":"defer"}
 EOF
 "#,
     )

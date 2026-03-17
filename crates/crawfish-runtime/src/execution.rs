@@ -637,6 +637,10 @@ pub(crate) fn local_harness_failure_code(error: &anyhow::Error) -> &'static str 
             LocalHarnessError::Timeout(_) => failure_code_local_harness_timeout(),
             LocalHarnessError::ExitNonZero { .. } => failure_code_local_harness_exit_nonzero(),
             LocalHarnessError::Protocol(_) => failure_code_local_harness_protocol_error(),
+            LocalHarnessError::Workspace(_) => failure_code_local_harness_protocol_error(),
+            LocalHarnessError::ProposalMutationDetected(_) => {
+                failure_code_local_harness_protocol_error()
+            }
         };
     }
     failure_code_route_unavailable()
@@ -705,8 +709,11 @@ pub(crate) fn set_action_blocked(action: &mut Action, code: &str, reason: String
 pub(crate) fn selected_executor_from_external_refs(
     external_refs: &[ExternalRef],
 ) -> Option<String> {
-    external_ref_value(external_refs, "a2a.remote_principal")
-        .map(|principal| format!("a2a.{principal}"))
+    external_ref_value(external_refs, "deterministic.executor")
+        .or_else(|| {
+            external_ref_value(external_refs, "a2a.remote_principal")
+                .map(|principal| format!("a2a.{principal}"))
+        })
         .or_else(|| {
             external_ref_value(external_refs, "openclaw.target_agent")
                 .map(|agent| format!("openclaw.{agent}"))
@@ -735,7 +742,42 @@ pub(crate) enum WorkspaceLockAttempt {
 }
 
 pub(crate) fn is_remote_harness_executor(executor: &str) -> bool {
-    executor.starts_with("openclaw.") || executor.starts_with("local_harness.")
+    executor.starts_with("openclaw.")
+}
+
+pub(crate) fn is_local_harness_executor(executor: &str) -> bool {
+    executor.starts_with("local_harness.")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskPlanEncounterFinalOutcome {
+    Admit,
+    AdmitAfterRevision,
+    ReviewRequired,
+    Defer,
+}
+
+impl TaskPlanEncounterFinalOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Admit => "admit",
+            Self::AdmitAfterRevision => "admit_after_revision",
+            Self::ReviewRequired => "review_required",
+            Self::Defer => "defer",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TaskPlanEncounterResolution {
+    outcome: TaskPlanEncounterFinalOutcome,
+    outputs: ActionOutputs,
+    selected_executor: String,
+    checkpoint: Option<DeterministicCheckpoint>,
+    external_refs: Vec<ExternalRef>,
+    surface_events: Vec<crawfish_core::SurfaceActionEvent>,
+    verification: TaskPlanVerificationResult,
+    revision_used: bool,
 }
 
 pub(crate) fn is_remote_agent_executor(executor: &str) -> bool {
@@ -804,6 +846,10 @@ pub(crate) async fn verify_task_plan_outputs(
     } else {
         None
     };
+    let recommended_disposition = artifact
+        .as_ref()
+        .map(|artifact| artifact.recommended_disposition.clone())
+        .unwrap_or(TaskPlanDisposition::ReviewRequired);
     let markdown = if let Some(markdown_artifact) = &markdown_artifact {
         Some(tokio::fs::read_to_string(&markdown_artifact.path).await?)
     } else {
@@ -823,6 +869,23 @@ pub(crate) async fn verify_task_plan_outputs(
         if artifact.confidence_summary.trim().is_empty() {
             failures.push("task plan must include a confidence summary".to_string());
         }
+        if artifact
+            .ordered_steps
+            .iter()
+            .any(|step| step.title.trim().is_empty() || step.detail.trim().is_empty())
+        {
+            failures.push("task plan steps must have non-empty titles and details".to_string());
+        }
+        if artifact
+            .target_files
+            .iter()
+            .any(|path| path.starts_with('/') || path.contains('\\'))
+        {
+            failures.push("task plan target_files must use relative repository paths".to_string());
+        }
+        if task_plan_contains_placeholder_text(artifact) {
+            failures.push("task plan must not contain placeholder or TODO text".to_string());
+        }
     }
 
     let mut combined_text = String::new();
@@ -840,7 +903,9 @@ pub(crate) async fn verify_task_plan_outputs(
             .into_iter()
             .filter(|token| !lowered.contains(token))
             .collect::<Vec<_>>();
-        if !missing_tokens.is_empty() {
+        if !missing_tokens.is_empty()
+            && matches!(recommended_disposition, TaskPlanDisposition::Admit)
+        {
             failures.push(format!(
                 "task plan does not sufficiently cover objective tokens: {}",
                 missing_tokens.join(", ")
@@ -852,11 +917,60 @@ pub(crate) async fn verify_task_plan_outputs(
         .into_iter()
         .filter(|output| !lowered.contains(&output.to_lowercase()))
         .collect::<Vec<_>>();
-    if !missing_outputs.is_empty() {
+    if !missing_outputs.is_empty() && matches!(recommended_disposition, TaskPlanDisposition::Admit)
+    {
         failures.push(format!(
             "task plan does not cover desired outputs: {}",
             missing_outputs.join(", ")
         ));
+    }
+    if let Some(artifact) = &artifact {
+        if task_plan_contains_path_leakage(&combined_text) {
+            failures.push(
+                "task plan must not leak temp paths or machine-local workspace paths".to_string(),
+            );
+        }
+        match recommended_disposition {
+            TaskPlanDisposition::Admit => {
+                if !artifact.clarifications_needed.is_empty() {
+                    failures.push(
+                        "admissible task plans must not leave unresolved clarifications"
+                            .to_string(),
+                    );
+                }
+                if !artifact.required_approvals.is_empty() {
+                    failures.push(
+                        "admissible task plans must not require outstanding approvals".to_string(),
+                    );
+                }
+                if !artifact.required_evidence.is_empty() {
+                    failures.push(
+                        "admissible task plans must not require outstanding evidence".to_string(),
+                    );
+                }
+                if confidence_is_low(&artifact.confidence_summary) {
+                    failures.push(
+                        "admissible task plans must not claim admit with low confidence"
+                            .to_string(),
+                    );
+                }
+            }
+            TaskPlanDisposition::ReviewRequired => {}
+            TaskPlanDisposition::Defer => {
+                if artifact.clarifications_needed.is_empty()
+                    && artifact.required_evidence.is_empty()
+                {
+                    failures.push(
+                        "deferred task plans must identify missing clarifications or evidence"
+                            .to_string(),
+                    );
+                }
+                failures.push(
+                    "task plan should defer until clarifications or evidence gaps are resolved"
+                        .to_string(),
+                );
+            }
+        }
     }
 
     if failures.is_empty() {
@@ -869,6 +983,9 @@ pub(crate) async fn verify_task_plan_outputs(
                 last_failure_code: None,
             },
             feedback: None,
+            recommended_disposition,
+            artifact,
+            failures,
         });
     }
 
@@ -882,6 +999,9 @@ pub(crate) async fn verify_task_plan_outputs(
             last_failure_code: Some(failure_code_verification_failed().to_string()),
         },
         feedback: Some(feedback),
+        recommended_disposition,
+        artifact,
+        failures,
     })
 }
 
@@ -922,6 +1042,144 @@ pub(crate) fn extract_key_tokens(text: &str) -> Vec<String> {
     tokens
 }
 
+pub(crate) fn task_plan_contains_path_leakage(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    lowered.contains("/tmp/")
+        || lowered.contains("/var/folders/")
+        || lowered.contains(".codex/worktrees/")
+        || lowered.contains("\\temp\\")
+}
+
+fn confidence_is_low(confidence_summary: &str) -> bool {
+    let lowered = confidence_summary.to_lowercase();
+    lowered.starts_with("low confidence") || lowered.starts_with("medium-low confidence")
+}
+
+fn task_plan_contains_placeholder_text(artifact: &crawfish_types::TaskPlanArtifact) -> bool {
+    let mut texts = artifact
+        .target_files
+        .iter()
+        .cloned()
+        .chain(artifact.risks.iter().cloned())
+        .chain(artifact.assumptions.iter().cloned())
+        .chain(artifact.clarifications_needed.iter().cloned())
+        .chain(artifact.required_approvals.iter().cloned())
+        .chain(artifact.required_evidence.iter().cloned())
+        .chain(artifact.test_suggestions.iter().cloned())
+        .collect::<Vec<_>>();
+    texts.push(artifact.confidence_summary.clone());
+    texts.extend(
+        artifact
+            .ordered_steps
+            .iter()
+            .flat_map(|step| [step.title.clone(), step.detail.clone()]),
+    );
+    texts.into_iter().any(|text| {
+        let lowered = text.to_lowercase();
+        lowered.contains("todo")
+            || lowered.contains("tbd")
+            || lowered.contains("placeholder")
+            || lowered.contains("fill in")
+            || lowered.contains("lorem ipsum")
+    })
+}
+
+fn task_plan_encounter_policy(action: &Action) -> crawfish_types::TaskPlanEncounterPolicy {
+    action
+        .execution_strategy
+        .as_ref()
+        .map(|strategy| strategy.encounter_policy.clone())
+        .unwrap_or(crawfish_types::TaskPlanEncounterPolicy::None)
+}
+
+fn should_trigger_task_plan_encounter(
+    action: &Action,
+    verification: &TaskPlanVerificationResult,
+    policy: &crawfish_types::TaskPlanEncounterPolicy,
+) -> bool {
+    match policy {
+        crawfish_types::TaskPlanEncounterPolicy::None => false,
+        crawfish_types::TaskPlanEncounterPolicy::Always => true,
+        crawfish_types::TaskPlanEncounterPolicy::RiskTriggered => {
+            let Some(artifact) = verification.artifact.as_ref() else {
+                return false;
+            };
+            !verification.passed
+                || !artifact.clarifications_needed.is_empty()
+                || !artifact.required_approvals.is_empty()
+                || !artifact.required_evidence.is_empty()
+                || confidence_is_low(&artifact.confidence_summary)
+                || matches!(
+                    artifact.recommended_disposition,
+                    TaskPlanDisposition::ReviewRequired | TaskPlanDisposition::Defer
+                )
+                || matches!(action.contract.safety.approval_policy, ApprovalPolicy::Always)
+        }
+    }
+}
+
+fn task_plan_review_feedback_from_payload(payload: &TaskPlanReviewPayload) -> String {
+    let mut parts = vec![format!("Reviewer rationale: {}", payload.rationale)];
+    if payload.unsafe_overcommit {
+        parts.push(
+            "The prior plan overcommitted despite unresolved clarification, approval, or evidence gaps."
+                .to_string(),
+        );
+    }
+    if payload.should_clarify {
+        parts.push("Revise the plan so that clarification/defer behavior is explicit.".to_string());
+    }
+    if payload.needs_review {
+        parts.push("Preserve operator review where the plan remains governance-sensitive.".to_string());
+    }
+    if !payload.revision_hints.is_empty() {
+        parts.push(format!(
+            "Revision hints: {}",
+            payload.revision_hints.join("; ")
+        ));
+    }
+    parts.join(" ")
+}
+
+fn task_plan_fallback_encounter_outcome(
+    verification: &TaskPlanVerificationResult,
+) -> TaskPlanEncounterFinalOutcome {
+    match verification.recommended_disposition {
+        TaskPlanDisposition::Admit => TaskPlanEncounterFinalOutcome::ReviewRequired,
+        TaskPlanDisposition::ReviewRequired => TaskPlanEncounterFinalOutcome::ReviewRequired,
+        TaskPlanDisposition::Defer => TaskPlanEncounterFinalOutcome::Defer,
+    }
+}
+
+fn task_plan_final_outcome_from_review(
+    review: &TaskPlanReviewPayload,
+    initial_verification: &TaskPlanVerificationResult,
+    revised_verification: Option<&TaskPlanVerificationResult>,
+) -> TaskPlanEncounterFinalOutcome {
+    match review.decision {
+        TaskPlanReviewDecision::Defer => TaskPlanEncounterFinalOutcome::Defer,
+        TaskPlanReviewDecision::ReviewRequired => TaskPlanEncounterFinalOutcome::ReviewRequired,
+        TaskPlanReviewDecision::Admit => {
+            if initial_verification.passed && !review.unsafe_overcommit {
+                TaskPlanEncounterFinalOutcome::Admit
+            } else {
+                task_plan_fallback_encounter_outcome(initial_verification)
+            }
+        }
+        TaskPlanReviewDecision::ReviseOnce => {
+            if let Some(revised) = revised_verification {
+                if revised.passed {
+                    TaskPlanEncounterFinalOutcome::AdmitAfterRevision
+                } else {
+                    task_plan_fallback_encounter_outcome(revised)
+                }
+            } else {
+                task_plan_fallback_encounter_outcome(initial_verification)
+            }
+        }
+    }
+}
+
 pub(crate) fn metadata_string_array(metadata: &crawfish_types::Metadata, key: &str) -> Vec<String> {
     metadata
         .get(key)
@@ -934,6 +1192,223 @@ pub(crate) fn metadata_string_array(metadata: &crawfish_types::Metadata, key: &s
 }
 
 impl Supervisor {
+    async fn maybe_apply_task_plan_encounter(
+        &self,
+        action: &Action,
+        manifest: &AgentManifest,
+        strategy: &ExecutionStrategy,
+        outputs: ActionOutputs,
+        selected_executor: String,
+        checkpoint: Option<DeterministicCheckpoint>,
+        external_refs: Vec<ExternalRef>,
+        verification: TaskPlanVerificationResult,
+    ) -> anyhow::Result<Option<TaskPlanEncounterResolution>> {
+        let policy = strategy.encounter_policy.clone();
+        if matches!(policy, crawfish_types::TaskPlanEncounterPolicy::None)
+            || !is_local_harness_executor(&selected_executor)
+            || !should_trigger_task_plan_encounter(action, &verification, &policy)
+        {
+            return Ok(None);
+        }
+
+        let harness = if selected_executor.ends_with(".claude_code") {
+            LocalHarnessKind::ClaudeCode
+        } else if selected_executor.ends_with(".codex") {
+            LocalHarnessKind::Codex
+        } else {
+            return Ok(None);
+        };
+        let Some(artifact) = verification.artifact.clone() else {
+            return Ok(None);
+        };
+        let Some((adapter, base_refs)) = self.resolve_local_harness_adapter(manifest, harness)? else {
+            return Ok(None);
+        };
+
+        let review = adapter
+            .review_task_plan(action, &artifact, verification.feedback.as_deref())
+            .await?;
+
+        let mut encounter_outputs = outputs;
+        encounter_outputs.artifacts =
+            merge_artifact_refs(encounter_outputs.artifacts, vec![review.artifact.clone()]);
+        encounter_outputs.metadata.insert(
+            "encounter_review_provenance".to_string(),
+            review.provenance.clone(),
+        );
+
+        let mut encounter_external_refs = merge_external_refs(external_refs, base_refs);
+        let mut surface_events = vec![crawfish_core::SurfaceActionEvent {
+            event_type: "task_plan_encounter_triggered".to_string(),
+            payload: serde_json::json!({
+                "timestamp": now_timestamp(),
+                "policy": policy,
+                "selected_executor": selected_executor,
+                "recommended_disposition": verification.recommended_disposition,
+            }),
+        }];
+        surface_events.extend(review.events);
+
+        let mut final_outputs = encounter_outputs;
+        let mut final_selected_executor = selected_executor;
+        let mut final_checkpoint = checkpoint;
+        let mut final_verification = verification;
+        let mut revision_used = false;
+        let mut revised_verification: Option<TaskPlanVerificationResult> = None;
+
+        if matches!(review.payload.decision, TaskPlanReviewDecision::ReviseOnce) {
+            revision_used = true;
+            let mut revision_action = action.clone();
+            revision_action.inputs.insert(
+                "verification_feedback".to_string(),
+                serde_json::json!(task_plan_review_feedback_from_payload(&review.payload)),
+            );
+            match self
+                .execute_task_plan_single_pass(&mut revision_action, manifest)
+                .await?
+            {
+                ExecutionOutcome::Completed {
+                    outputs,
+                    selected_executor,
+                    checkpoint,
+                    external_refs,
+                    surface_events: revision_events,
+                } => {
+                    let verification = verify_task_plan_outputs(
+                        &revision_action,
+                        &outputs,
+                        1,
+                        &strategy.feedback_policy,
+                    )
+                    .await?;
+                    revised_verification = Some(verification);
+                    final_outputs = outputs;
+                    final_selected_executor = selected_executor;
+                    final_checkpoint = checkpoint;
+                    encounter_external_refs =
+                        merge_external_refs(encounter_external_refs, external_refs);
+                    surface_events.extend(revision_events);
+                }
+                ExecutionOutcome::Blocked {
+                    reason,
+                    failure_code,
+                    continuity_mode,
+                    outputs,
+                    external_refs,
+                    surface_events: revision_events,
+                } => {
+                    final_outputs = outputs;
+                    encounter_external_refs =
+                        merge_external_refs(encounter_external_refs, external_refs);
+                    surface_events.extend(revision_events);
+                    surface_events.push(crawfish_core::SurfaceActionEvent {
+                        event_type: "task_plan_encounter_revision_blocked".to_string(),
+                        payload: serde_json::json!({
+                            "timestamp": now_timestamp(),
+                            "reason": reason,
+                            "failure_code": failure_code,
+                            "continuity_mode": continuity_mode.map(|mode| format!("{mode:?}").to_lowercase()),
+                        }),
+                    });
+                }
+                ExecutionOutcome::Failed {
+                    reason,
+                    failure_code,
+                    outputs,
+                    checkpoint,
+                    external_refs,
+                    surface_events: revision_events,
+                } => {
+                    final_outputs = outputs;
+                    final_checkpoint = checkpoint;
+                    encounter_external_refs =
+                        merge_external_refs(encounter_external_refs, external_refs);
+                    surface_events.extend(revision_events);
+                    surface_events.push(crawfish_core::SurfaceActionEvent {
+                        event_type: "task_plan_encounter_revision_failed".to_string(),
+                        payload: serde_json::json!({
+                            "timestamp": now_timestamp(),
+                            "reason": reason,
+                            "failure_code": failure_code,
+                        }),
+                    });
+                }
+            }
+        }
+
+        let outcome = task_plan_final_outcome_from_review(
+            &review.payload,
+            &final_verification,
+            revised_verification.as_ref(),
+        );
+        if let Some(revised) = revised_verification {
+            final_verification = revised;
+        }
+
+        final_outputs.metadata.insert(
+            "encounter_policy".to_string(),
+            serde_json::to_value(&policy)?,
+        );
+        final_outputs.metadata.insert(
+            "encounter_triggered".to_string(),
+            serde_json::json!(true),
+        );
+        final_outputs.metadata.insert(
+            "encounter_review_decision".to_string(),
+            serde_json::to_value(&review.payload.decision)?,
+        );
+        final_outputs.metadata.insert(
+            "encounter_revision_used".to_string(),
+            serde_json::json!(revision_used),
+        );
+        final_outputs.metadata.insert(
+            "encounter_final_outcome".to_string(),
+            serde_json::json!(outcome.as_str()),
+        );
+        final_outputs.metadata.insert(
+            "encounter_unsafe_overcommit".to_string(),
+            serde_json::json!(review.payload.unsafe_overcommit),
+        );
+        final_outputs.metadata.insert(
+            "task_plan_disposition".to_string(),
+            serde_json::json!(outcome.as_str()),
+        );
+
+        encounter_external_refs.push(ExternalRef {
+            kind: "encounter.policy".to_string(),
+            value: serde_json::to_value(&policy)?
+                .as_str()
+                .unwrap_or("none")
+                .to_string(),
+            endpoint: None,
+        });
+        encounter_external_refs.push(ExternalRef {
+            kind: "encounter.final_outcome".to_string(),
+            value: outcome.as_str().to_string(),
+            endpoint: None,
+        });
+        surface_events.push(crawfish_core::SurfaceActionEvent {
+            event_type: "task_plan_encounter_resolved".to_string(),
+            payload: serde_json::json!({
+                "timestamp": now_timestamp(),
+                "review_decision": review.payload.decision,
+                "final_outcome": outcome.as_str(),
+                "revision_used": revision_used,
+            }),
+        });
+
+        Ok(Some(TaskPlanEncounterResolution {
+            outcome,
+            outputs: final_outputs,
+            selected_executor: final_selected_executor,
+            checkpoint: final_checkpoint,
+            external_refs: encounter_external_refs,
+            surface_events,
+            verification: final_verification,
+            revision_used,
+        }))
+    }
+
     pub(crate) async fn write_checkpoint_for_action(
         &self,
         action: &mut Action,
@@ -965,12 +1440,22 @@ impl Supervisor {
         action: &mut Action,
         executor_kind: &str,
         running_stage: &str,
-        external_refs: Vec<ExternalRef>,
+        mut external_refs: Vec<ExternalRef>,
         executor: &E,
     ) -> anyhow::Result<ExecutionOutcome>
     where
         E: DeterministicExecutor,
     {
+        if !external_refs
+            .iter()
+            .any(|reference| reference.kind == "deterministic.executor")
+        {
+            external_refs.push(ExternalRef {
+                kind: "deterministic.executor".to_string(),
+                value: executor_kind.to_string(),
+                endpoint: None,
+            });
+        }
         let digest = input_digest(&action.inputs)?;
         if let Some(checkpoint) = self.load_deterministic_checkpoint(action).await? {
             if checkpoint.executor_kind == executor_kind
@@ -1043,7 +1528,22 @@ impl Supervisor {
                     .await
             }
             ExecutionStrategyMode::SinglePass => {
-                self.execute_task_plan_single_pass(action, manifest).await
+                if let Some(mut strategy) = action.execution_strategy.clone().filter(|strategy| {
+                    !matches!(
+                        strategy.encounter_policy,
+                        crawfish_types::TaskPlanEncounterPolicy::None
+                    )
+                }) {
+                    strategy.stop_budget = Some(crawfish_types::StopBudget {
+                        max_iterations: 1,
+                        max_cost_usd: None,
+                        max_elapsed_ms: None,
+                    });
+                    self.execute_task_plan_verify_loop(action, manifest, &strategy)
+                        .await
+                } else {
+                    self.execute_task_plan_single_pass(action, manifest).await
+                }
             }
         }
     }
@@ -1233,27 +1733,68 @@ impl Supervisor {
 
             match outcome {
                 ExecutionOutcome::Completed {
-                    mut outputs,
+                    outputs,
                     selected_executor,
                     checkpoint,
                     external_refs,
                     surface_events,
                 } => {
-                    aggregated_external_refs =
-                        merge_external_refs(aggregated_external_refs, external_refs);
                     for event in surface_events {
                         self.store
                             .append_action_event(&action.id, &event.event_type, event.payload)
                             .await?;
                     }
 
-                    let verification = verify_task_plan_outputs(
+                    let mut outputs = outputs;
+                    let mut selected_executor = selected_executor;
+                    let mut iteration_external_refs = external_refs;
+                    let mut verification = verify_task_plan_outputs(
                         &iteration_action,
                         &outputs,
                         iteration,
                         &strategy.feedback_policy,
                     )
                     .await?;
+                    let mut checkpoint = checkpoint;
+
+                    if should_trigger_task_plan_encounter(
+                        &iteration_action,
+                        &verification,
+                        &strategy.encounter_policy,
+                    ) && is_local_harness_executor(&selected_executor)
+                    {
+                        if let Some(encounter) = self
+                            .maybe_apply_task_plan_encounter(
+                                &iteration_action,
+                                manifest,
+                                strategy,
+                                outputs.clone(),
+                                selected_executor.clone(),
+                                checkpoint.clone(),
+                                iteration_external_refs.clone(),
+                                verification.clone(),
+                            )
+                            .await?
+                        {
+                            outputs = encounter.outputs;
+                            selected_executor = encounter.selected_executor;
+                            checkpoint = encounter.checkpoint;
+                            iteration_external_refs = encounter.external_refs;
+                            verification = encounter.verification;
+                            for event in encounter.surface_events {
+                                self.store
+                                    .append_action_event(
+                                        &action.id,
+                                        &event.event_type,
+                                        event.payload,
+                                    )
+                                    .await?;
+                            }
+                        }
+                    }
+
+                    aggregated_external_refs =
+                        merge_external_refs(aggregated_external_refs, iteration_external_refs);
                     let mut checkpoint = checkpoint.unwrap_or(build_checkpoint(
                         &iteration_action,
                         &selected_executor,
@@ -1284,9 +1825,64 @@ impl Supervisor {
                                 "iteration": iteration,
                                 "selected_executor": selected_executor,
                                 "status": if verification.passed { "passed" } else { "failed" },
+                                "recommended_disposition": verification.recommended_disposition,
+                                "encounter_policy": strategy.encounter_policy,
+                                "encounter_triggered": outputs.metadata.get("encounter_triggered").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                                "encounter_final_outcome": outputs.metadata.get("encounter_final_outcome").cloned(),
                             }),
                         )
                         .await?;
+
+                    let encounter_final_outcome = outputs
+                        .metadata
+                        .get("encounter_final_outcome")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+
+                    if matches!(encounter_final_outcome.as_str(), "review_required" | "defer") {
+                        self.record_verification_evaluation(
+                            action,
+                            iteration,
+                            &verification.summary,
+                            verification.feedback.as_ref(),
+                        )
+                        .await?;
+                        outputs.metadata.insert(
+                            "strategy_mode".to_string(),
+                            serde_json::json!("verify_loop"),
+                        );
+                        outputs.metadata.insert(
+                            "strategy_iteration".to_string(),
+                            serde_json::json!(iteration),
+                        );
+                        outputs.metadata.insert(
+                            "verification_summary".to_string(),
+                            serde_json::to_value(
+                                checkpoint
+                                    .strategy_state
+                                    .as_ref()
+                                    .and_then(|state| state.verification_summary.clone())
+                                    .ok_or_else(|| anyhow::anyhow!("missing verification summary"))?,
+                            )?,
+                        );
+                        return Ok(ExecutionOutcome::Blocked {
+                            reason: if encounter_final_outcome == "defer" {
+                                "task.plan deferred pending clarifications or evidence".to_string()
+                            } else {
+                                "task.plan requires operator review after encounter mediation".to_string()
+                            },
+                            failure_code: if encounter_final_outcome == "defer" {
+                                failure_code_verification_failed().to_string()
+                            } else {
+                                "review_required".to_string()
+                            },
+                            continuity_mode: Some(ContinuityModeName::HumanHandoff),
+                            outputs,
+                            external_refs: aggregated_external_refs,
+                            surface_events: Vec::new(),
+                        });
+                    }
 
                     if verification.passed {
                         self.record_verification_evaluation(
@@ -1313,6 +1909,10 @@ impl Supervisor {
                         outputs.metadata.insert(
                             "strategy_iteration".to_string(),
                             serde_json::json!(iteration),
+                        );
+                        outputs.metadata.insert(
+                            "task_plan_disposition".to_string(),
+                            serde_json::to_value(&verification.recommended_disposition)?,
                         );
                         outputs.metadata.insert(
                             "verification_summary".to_string(),
@@ -1343,9 +1943,22 @@ impl Supervisor {
                                 "iteration": iteration,
                                 "summary": verification.summary.clone(),
                                 "feedback": verification.feedback.clone(),
+                                "recommended_disposition": verification.recommended_disposition,
                             }),
                         )
                         .await?;
+                    outputs.metadata.insert(
+                        "strategy_mode".to_string(),
+                        serde_json::json!("verify_loop"),
+                    );
+                    outputs.metadata.insert(
+                        "strategy_iteration".to_string(),
+                        serde_json::json!(iteration),
+                    );
+                    outputs.metadata.insert(
+                        "task_plan_disposition".to_string(),
+                        serde_json::to_value(&verification.recommended_disposition)?,
+                    );
                     self.record_verification_evaluation(
                         action,
                         iteration,
@@ -1520,13 +2133,6 @@ impl Supervisor {
         manifest: &AgentManifest,
     ) -> anyhow::Result<ExecutionOutcome> {
         let has_active_followup = active_remote_followup_ref_for_action(action).is_some();
-        let deterministic_fallback = !has_active_followup
-            && action
-                .contract
-                .execution
-                .fallback_chain
-                .iter()
-                .any(|route| route == "deterministic");
         let mut attempted_agentic_route = false;
         let mut last_reason: Option<String> = None;
         let mut last_external_refs = Vec::new();
@@ -1535,6 +2141,18 @@ impl Supervisor {
         } else {
             action.contract.execution.preferred_harnesses.clone()
         };
+        let allows_local_agentic_route = preferred_routes.is_empty()
+            || preferred_routes
+                .iter()
+                .any(|route| matches!(route.as_str(), "claude_code" | "codex"));
+        let deterministic_fallback = !has_active_followup
+            && allows_local_agentic_route
+            && action
+                .contract
+                .execution
+                .fallback_chain
+                .iter()
+                .any(|route| route == "deterministic");
 
         for route in preferred_routes {
             match route.as_str() {
@@ -1638,9 +2256,9 @@ impl Supervisor {
                                             created_at: now_timestamp(),
                                         })
                                         .await?;
-                                    last_reason = Some(reason);
-                                    last_external_refs = base_refs;
-                                    continue;
+                                    return Ok(self.continuity_blocked_outcome(
+                                        action, reason, false, base_refs,
+                                    ));
                                 }
                             };
                             let federation_pack = match self
@@ -2221,6 +2839,12 @@ impl Supervisor {
                                                 created_at: now_timestamp(),
                                             })
                                             .await?;
+                                        return Ok(self.continuity_blocked_outcome(
+                                            action,
+                                            error.to_string(),
+                                            false,
+                                            base_refs,
+                                        ));
                                     }
                                     last_reason = Some(error.to_string());
                                     last_external_refs = base_refs;
@@ -2268,7 +2892,12 @@ impl Supervisor {
                                     created_at: now_timestamp(),
                                 })
                                 .await?;
-                            last_reason = Some(error.to_string());
+                            return Ok(self.continuity_blocked_outcome(
+                                action,
+                                error.to_string(),
+                                false,
+                                Vec::new(),
+                            ));
                         }
                     }
                 }
