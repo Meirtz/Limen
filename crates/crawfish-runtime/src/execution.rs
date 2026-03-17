@@ -770,14 +770,21 @@ impl TaskPlanEncounterFinalOutcome {
 
 #[derive(Debug)]
 struct TaskPlanEncounterResolution {
-    outcome: TaskPlanEncounterFinalOutcome,
     outputs: ActionOutputs,
     selected_executor: String,
     checkpoint: Option<DeterministicCheckpoint>,
     external_refs: Vec<ExternalRef>,
     surface_events: Vec<crawfish_core::SurfaceActionEvent>,
     verification: TaskPlanVerificationResult,
-    revision_used: bool,
+}
+
+#[derive(Debug)]
+struct TaskPlanEncounterContext {
+    outputs: ActionOutputs,
+    selected_executor: String,
+    checkpoint: Option<DeterministicCheckpoint>,
+    external_refs: Vec<ExternalRef>,
+    verification: TaskPlanVerificationResult,
 }
 
 pub(crate) fn is_remote_agent_executor(executor: &str) -> bool {
@@ -985,7 +992,6 @@ pub(crate) async fn verify_task_plan_outputs(
             feedback: None,
             recommended_disposition,
             artifact,
-            failures,
         });
     }
 
@@ -1001,7 +1007,6 @@ pub(crate) async fn verify_task_plan_outputs(
         feedback: Some(feedback),
         recommended_disposition,
         artifact,
-        failures,
     })
 }
 
@@ -1082,14 +1087,6 @@ fn task_plan_contains_placeholder_text(artifact: &crawfish_types::TaskPlanArtifa
             || lowered.contains("fill in")
             || lowered.contains("lorem ipsum")
     })
-}
-
-fn task_plan_encounter_policy(action: &Action) -> crawfish_types::TaskPlanEncounterPolicy {
-    action
-        .execution_strategy
-        .as_ref()
-        .map(|strategy| strategy.encounter_policy.clone())
-        .unwrap_or(crawfish_types::TaskPlanEncounterPolicy::None)
 }
 
 fn should_trigger_task_plan_encounter(
@@ -1202,12 +1199,15 @@ impl Supervisor {
         action: &Action,
         manifest: &AgentManifest,
         strategy: &ExecutionStrategy,
-        outputs: ActionOutputs,
-        selected_executor: String,
-        checkpoint: Option<DeterministicCheckpoint>,
-        external_refs: Vec<ExternalRef>,
-        verification: TaskPlanVerificationResult,
+        context: TaskPlanEncounterContext,
     ) -> anyhow::Result<Option<TaskPlanEncounterResolution>> {
+        let TaskPlanEncounterContext {
+            outputs,
+            selected_executor,
+            checkpoint,
+            external_refs,
+            verification,
+        } = context;
         let policy = strategy.encounter_policy.clone();
         if matches!(policy, crawfish_types::TaskPlanEncounterPolicy::None)
             || !is_local_harness_executor(&selected_executor)
@@ -1403,14 +1403,12 @@ impl Supervisor {
         });
 
         Ok(Some(TaskPlanEncounterResolution {
-            outcome,
             outputs: final_outputs,
             selected_executor: final_selected_executor,
             checkpoint: final_checkpoint,
             external_refs: encounter_external_refs,
             surface_events,
             verification: final_verification,
-            revision_used,
         }))
     }
 
@@ -1773,11 +1771,13 @@ impl Supervisor {
                                 &iteration_action,
                                 manifest,
                                 strategy,
-                                outputs.clone(),
-                                selected_executor.clone(),
-                                checkpoint.clone(),
-                                iteration_external_refs.clone(),
-                                verification.clone(),
+                                TaskPlanEncounterContext {
+                                    outputs: outputs.clone(),
+                                    selected_executor: selected_executor.clone(),
+                                    checkpoint: checkpoint.clone(),
+                                    external_refs: iteration_external_refs.clone(),
+                                    verification: verification.clone(),
+                                },
                             )
                             .await?
                         {

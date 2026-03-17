@@ -183,16 +183,12 @@ impl LocalHarnessAdapter {
             {
                 Ok(output) => output,
                 Err(error) => {
-                    if let Err(integrity_error) = workspace_context.finalize().await {
-                        return Err(integrity_error);
-                    }
+                    workspace_context.finalize().await?;
                     return Err(error);
                 }
             },
             Err(error) => {
-                if let Err(integrity_error) = workspace_context.finalize().await {
-                    return Err(integrity_error);
-                }
+                workspace_context.finalize().await?;
                 return Err(error);
             }
         };

@@ -278,5 +278,4 @@ struct TaskPlanVerificationResult {
     feedback: Option<String>,
     recommended_disposition: TaskPlanDisposition,
     artifact: Option<crawfish_types::TaskPlanArtifact>,
-    failures: Vec<String>,
 }
