@@ -76,6 +76,19 @@ mod tests {
     }
 
     #[test]
+    fn tally_of_nothing_is_empty() {
+        let empty: Vec<((&str, &str), bool)> = vec![];
+        assert!(tally_by(empty).is_empty());
+        // and a wider interval for fewer samples
+        let (_, hi5) = wilson_95(5, 5);
+        let (_, hi50) = wilson_95(50, 50);
+        assert!(
+            hi50 < hi5 + 1e-9,
+            "more samples should not widen the upper bound"
+        );
+    }
+
+    #[test]
     fn tally_groups_and_counts() {
         let rows = vec![
             (("t", "naive"), false),

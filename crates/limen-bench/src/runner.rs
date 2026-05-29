@@ -382,6 +382,14 @@ mod tests {
     use crate::pilot::{py_disjoint_independent, py_interface_break, py_shared_region_merge};
 
     #[test]
+    fn coupled_readers_ignores_self_reads() {
+        // a subtask that "reads" only its own write region is not coupled to anything
+        let subs = vec![PilotSubtask::new("x", "a.py").reading("a.py")];
+        let changed: BTreeSet<String> = ["a.py".to_string()].into_iter().collect();
+        assert!(coupled_readers(&subs, &changed).is_empty());
+    }
+
+    #[test]
     fn coupled_readers_finds_cross_file_dependencies() {
         let task = py_interface_break();
         // api.py changed → the caller (reads api.py) is a coupled reader; the api author is not.
