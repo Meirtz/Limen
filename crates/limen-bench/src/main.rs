@@ -9,9 +9,13 @@ use limen_bench::sim::{simulate, SimParams};
 use limen_bench::task;
 
 fn main() -> anyhow::Result<()> {
-    // `limen-bench models` discovers the exact inference-hub model ids (needs a key).
-    if std::env::args().nth(1).as_deref() == Some("models") {
-        return list_models();
+    // Inference-hub dev subcommands (need `INFERENCE_HUB_API_KEY`):
+    //   `limen-bench models`                       — list available model ids
+    //   `limen-bench complete <model> [prompt...]` — one-shot completion (validate a model)
+    match std::env::args().nth(1).as_deref() {
+        Some("models") => return list_models(),
+        Some("complete") => return complete_cmd(),
+        _ => {}
     }
     println!("# Interference simulation (synthetic, deterministic — NOT measured LLM results)\n");
     println!(
@@ -54,7 +58,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// `limen-bench models` — list available inference-hub model ids (needs `INFERENCE_HUB_API_KEY`),
-/// so we can pin the exact `nvdev/...` strings for Kimi / GLM / DeepSeek / MiMo before a run.
+/// so we can pin the exact model strings for the open-model pilot set before a run.
 fn list_models() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -67,6 +71,41 @@ fn list_models() -> anyhow::Result<()> {
         for m in &models {
             println!("  {m}");
         }
+        anyhow::Ok(())
+    })
+}
+
+/// `limen-bench complete <model> [prompt...]` — a one-shot completion to validate a model
+/// end-to-end (the POST `/chat/completions` path). Prints the reply.
+fn complete_cmd() -> anyhow::Result<()> {
+    use limen_bench::model::{ChatMessage, CompletionParams, ModelClient};
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let model = args
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("usage: limen-bench complete <model> [prompt...]"))?;
+    let prompt = if args.len() > 1 {
+        args[1..].join(" ")
+    } else {
+        "Reply with exactly: OK".to_string()
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = ModelClient::from_env()?;
+        let out = client
+            .complete(
+                &model,
+                &[ChatMessage::user(&prompt)],
+                &CompletionParams {
+                    temperature: 0.0,
+                    max_tokens: 256,
+                    seed: Some(1),
+                },
+            )
+            .await?;
+        println!("{out}");
         anyhow::Ok(())
     })
 }
