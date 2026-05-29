@@ -8,6 +8,7 @@
 - [ ] `cargo fmt --all`
 - [ ] `cargo test --workspace`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] No credentials, provider endpoints, or model identifiers in tracked files
 
 ## Public Surface Review
 
