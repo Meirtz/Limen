@@ -110,6 +110,72 @@ pub fn simulate(params: &SimParams) -> SimStats {
     }
 }
 
+/// Parameters for the per-arm coupling sweep.
+#[derive(Clone, Copy, Debug)]
+pub struct ArmSweepParams {
+    /// same-file (shared-region) coupling pairs
+    pub n_shared: usize,
+    /// cross-file (interface / write-skew) coupling pairs
+    pub n_cross: usize,
+    /// per-pair probability the coupling actually conflicts
+    pub p: f64,
+    /// advisory adherence — probability a reconciliation round fixes a cross-file conflict
+    pub alpha: f64,
+    pub trials: usize,
+    pub seed: u64,
+}
+
+/// Pass rate by arm, plus the coupling fraction of the modeled task.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArmPass {
+    pub naive: f64,
+    pub limen: f64,
+    pub limen_deps: f64,
+    pub coupling_fraction: f64,
+}
+
+/// Monte-Carlo of pass rate by arm as work shifts from same-file to cross-file coupling. Encodes
+/// the mechanism the pilot showed: naive loses on any conflict; region leases (Limen) recover
+/// same-file conflicts but not cross-file write skew; the advisory dependency round (LimenDeps)
+/// recovers cross-file too, up to adherence `alpha`. A run passes an arm iff every conflicting
+/// pair is handled by that arm.
+pub fn simulate_arms(params: &ArmSweepParams) -> ArmPass {
+    let mut rng = Rng::new(params.seed);
+    let (mut pass_n, mut pass_l, mut pass_d) = (0u64, 0u64, 0u64);
+    for _ in 0..params.trials {
+        let (mut ok_n, mut ok_l, mut ok_d) = (true, true, true);
+        for _ in 0..params.n_shared {
+            if rng.bernoulli(params.p) {
+                ok_n = false; // naive loses the same-file update; leases compose
+            }
+        }
+        for _ in 0..params.n_cross {
+            if rng.bernoulli(params.p) {
+                ok_n = false; // naive fails
+                ok_l = false; // per-file leases don't serialize cross-file skew
+                if !rng.bernoulli(params.alpha) {
+                    ok_d = false; // advisory round recovers it only when adhered to
+                }
+            }
+        }
+        pass_n += ok_n as u64;
+        pass_l += ok_l as u64;
+        pass_d += ok_d as u64;
+    }
+    let t = params.trials as f64;
+    let total = (params.n_shared + params.n_cross) as f64;
+    ArmPass {
+        naive: pass_n as f64 / t,
+        limen: pass_l as f64 / t,
+        limen_deps: pass_d as f64 / t,
+        coupling_fraction: if total > 0.0 {
+            params.n_cross as f64 / total
+        } else {
+            0.0
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +217,53 @@ mod tests {
         assert!(r(1.0) >= r(0.5));
         assert!(r(0.5) >= r(0.0) - 1e-9);
         assert!(r(0.0).abs() < 0.05, "no cooperation recovers ~nothing");
+    }
+
+    fn arms(n_shared: usize, n_cross: usize, alpha: f64) -> ArmPass {
+        simulate_arms(&ArmSweepParams {
+            n_shared,
+            n_cross,
+            p: 0.6,
+            alpha,
+            trials: 30_000,
+            seed: 7,
+        })
+    }
+
+    #[test]
+    fn arms_form_a_monotone_gradient() {
+        // limen-deps >= limen >= naive everywhere along the sweep.
+        for (s, c) in [(3, 0), (2, 1), (1, 2), (0, 3)] {
+            let a = arms(s, c, 0.9);
+            assert!(a.limen >= a.naive - 1e-9, "limen < naive at ({s},{c})");
+            assert!(a.limen_deps >= a.limen - 1e-9, "deps < limen at ({s},{c})");
+        }
+    }
+
+    #[test]
+    fn region_leases_recover_same_file_but_not_cross_file() {
+        // All same-file: leases recover everything (pass ~ 1), naive does not.
+        let shared = arms(4, 0, 1.0);
+        assert!(shared.limen > 0.99 && shared.naive < 0.9);
+        // All cross-file: leases buy nothing over naive; the advisory round (alpha=1) recovers it.
+        let cross = arms(0, 4, 1.0);
+        assert!(
+            (cross.limen - cross.naive).abs() < 0.02,
+            "leases shouldn't help cross-file"
+        );
+        assert!(
+            cross.limen_deps > 0.99,
+            "advisory round should recover cross-file at alpha=1"
+        );
+    }
+
+    #[test]
+    fn advisory_recovery_scales_with_adherence() {
+        let lo = arms(0, 4, 0.3).limen_deps;
+        let hi = arms(0, 4, 0.9).limen_deps;
+        assert!(
+            hi > lo,
+            "higher adherence should recover more cross-file: {lo:.3} !< {hi:.3}"
+        );
     }
 }
