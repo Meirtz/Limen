@@ -16,6 +16,7 @@ fn main() -> anyhow::Result<()> {
         Some("models") => return list_models(),
         Some("complete") => return complete_cmd(),
         Some("pilot") => return pilot_cmd(),
+        Some("analyze") => return analyze_cmd(),
         _ => {}
     }
     println!("# Interference simulation (synthetic, deterministic — NOT measured LLM results)\n");
@@ -223,4 +224,52 @@ fn pilot_cmd() -> anyhow::Result<()> {
         }
         anyhow::Ok(())
     })
+}
+
+/// `limen-bench analyze [results.jsonl]` — aggregate a JSONL run log into a per-(task,
+/// coordination) pass-rate table with 95% Wilson intervals. Reads `results/pilot.jsonl` by
+/// default. Pure post-processing — no network, no model.
+fn analyze_cmd() -> anyhow::Result<()> {
+    use anyhow::Context;
+    use limen_bench::runner::PilotRun;
+    use limen_bench::stats::tally_by;
+
+    let path = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "results/pilot.jsonl".to_string());
+    let body = std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+    let runs: Vec<PilotRun> = body
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()
+        .with_context(|| format!("parsing run records in {path}"))?;
+    if runs.is_empty() {
+        println!("no runs in {path}");
+        return Ok(());
+    }
+
+    let tallies = tally_by(
+        runs.iter()
+            .map(|r| ((r.task_id.clone(), r.coordination.clone()), r.passed)),
+    );
+
+    println!(
+        "# Pass rate by (task, coordination) — {} runs from {path}\n",
+        runs.len()
+    );
+    println!("| task | coordination | pass | rate | 95% CI |");
+    println!("|---|---|---|---|---|");
+    for ((task, coord), t) in &tallies {
+        let (lo, hi) = t.ci95();
+        println!(
+            "| {task} | {coord} | {}/{} | {:.0}% | {:.0}–{:.0}% |",
+            t.passes,
+            t.n,
+            t.rate() * 100.0,
+            lo * 100.0,
+            hi * 100.0
+        );
+    }
+    Ok(())
 }

@@ -23,4 +23,5 @@ pub mod pilot;
 pub mod record;
 pub mod runner;
 pub mod sim;
+pub mod stats;
 pub mod task;
