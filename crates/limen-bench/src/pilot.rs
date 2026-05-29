@@ -7,11 +7,31 @@
 
 use crate::task::Coupling;
 
-/// One agent's instruction over one file (its region).
+/// One agent's instruction over one file (its write region), plus the files it *reads*
+/// (its cross-file dependencies). `reads` is what makes interface coupling visible to the
+/// coordinator: a write to a file another agent reads is a write×read coupling.
 #[derive(Clone, Debug)]
 pub struct PilotSubtask {
     pub prompt: String,
     pub region: String,
+    pub reads: Vec<String>,
+}
+
+impl PilotSubtask {
+    /// A subtask with no cross-file dependencies.
+    pub fn new(prompt: impl Into<String>, region: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            region: region.into(),
+            reads: Vec::new(),
+        }
+    }
+
+    /// Declare that this subtask depends on (reads) `path`.
+    pub fn reading(mut self, path: impl Into<String>) -> Self {
+        self.reads.push(path.into());
+        self
+    }
 }
 
 /// A pilot task: seed repo + one subtask per agent + a pass/fail test command.
@@ -35,6 +55,10 @@ impl PilotTask {
     }
 }
 
+fn py_test(import_and_assert: &str) -> Vec<String> {
+    vec!["python".into(), "-c".into(), import_and_assert.into()]
+}
+
 /// Two agents add two functions to the **same** module — a shared-region merge. Naive
 /// concurrency loses one function (the import fails); coordination composes both.
 pub fn py_shared_region_merge() -> PilotTask {
@@ -47,20 +71,16 @@ pub fn py_shared_region_merge() -> PilotTask {
             ("mathx/ops.py".into(), "\"\"\"arithmetic ops\"\"\"\n".into()),
         ],
         subtasks: vec![
-            PilotSubtask {
-                prompt: "Add a function `def add(a, b): return a + b` to this module. Keep all existing content.".into(),
-                region: "mathx/ops.py".into(),
-            },
-            PilotSubtask {
-                prompt: "Add a function `def mul(a, b): return a * b` to this module. Keep all existing content.".into(),
-                region: "mathx/ops.py".into(),
-            },
+            PilotSubtask::new(
+                "Add a function `def add(a, b): return a + b` to this module. Keep all existing content.",
+                "mathx/ops.py",
+            ),
+            PilotSubtask::new(
+                "Add a function `def mul(a, b): return a * b` to this module. Keep all existing content.",
+                "mathx/ops.py",
+            ),
         ],
-        test_cmd: vec![
-            "python".into(),
-            "-c".into(),
-            "from mathx.ops import add, mul; assert add(2, 3) == 5 and mul(2, 3) == 6; print('ok')".into(),
-        ],
+        test_cmd: py_test("from mathx.ops import add, mul; assert add(2, 3) == 5 and mul(2, 3) == 6; print('ok')"),
     }
 }
 
@@ -77,26 +97,24 @@ pub fn py_disjoint_independent() -> PilotTask {
             ("pkg/b.py".into(), "\"\"\"b\"\"\"\n".into()),
         ],
         subtasks: vec![
-            PilotSubtask {
-                prompt: "Add a function `def a(): return 'A'` to this module. Keep all existing content.".into(),
-                region: "pkg/a.py".into(),
-            },
-            PilotSubtask {
-                prompt: "Add a function `def b(): return 'B'` to this module. Keep all existing content.".into(),
-                region: "pkg/b.py".into(),
-            },
+            PilotSubtask::new(
+                "Add a function `def a(): return 'A'` to this module. Keep all existing content.",
+                "pkg/a.py",
+            ),
+            PilotSubtask::new(
+                "Add a function `def b(): return 'B'` to this module. Keep all existing content.",
+                "pkg/b.py",
+            ),
         ],
-        test_cmd: vec![
-            "python".into(),
-            "-c".into(),
-            "from pkg.a import a; from pkg.b import b; assert a() == 'A' and b() == 'B'; print('ok')".into(),
-        ],
+        test_cmd: py_test("from pkg.a import a; from pkg.b import b; assert a() == 'A' and b() == 'B'; print('ok')"),
     }
 }
 
-/// An `interface` task: one agent renames a symbol, another still calls the old name — a
-/// cross-region break (write skew) that region leases alone do not prevent (motivates the
-/// write×read rule + the witness backstop). Useful once the runner exists.
+/// An `interface` task: one agent renames a symbol another file calls — a **cross-region write
+/// skew**. Per-file leases don't serialize it (the files don't overlap), so it breaks under both
+/// naive and plain Limen; it is recovered only when the coordinator surfaces the write×read
+/// coupling to the dependent agent (`LimenDeps`). The caller subtask therefore declares it
+/// *reads* `svc/api.py`.
 pub fn py_interface_break() -> PilotTask {
     PilotTask {
         id: "py-interface-break".into(),
@@ -104,27 +122,27 @@ pub fn py_interface_break() -> PilotTask {
         coupling: Coupling::Interface,
         initial: vec![
             ("svc/__init__.py".into(), String::new()),
-            ("svc/api.py".into(), "def handle(req):\n    return req\n".into()),
+            (
+                "svc/api.py".into(),
+                "def handle(req):\n    return req\n".into(),
+            ),
             (
                 "svc/caller.py".into(),
                 "from svc.api import handle\n\ndef run(x):\n    return handle(x)\n".into(),
             ),
         ],
         subtasks: vec![
-            PilotSubtask {
-                prompt: "Rename the function `handle` to `process` in this file (update its definition).".into(),
-                region: "svc/api.py".into(),
-            },
-            PilotSubtask {
-                prompt: "Add a docstring to the `run` function. Keep the existing call as-is.".into(),
-                region: "svc/caller.py".into(),
-            },
+            PilotSubtask::new(
+                "Rename the function `handle` to `process` in this file (update its definition).",
+                "svc/api.py",
+            ),
+            PilotSubtask::new(
+                "Add a docstring to the `run` function. Keep the existing call as-is.",
+                "svc/caller.py",
+            )
+            .reading("svc/api.py"),
         ],
-        test_cmd: vec![
-            "python".into(),
-            "-c".into(),
-            "from svc.caller import run; assert run(7) == 7; print('ok')".into(),
-        ],
+        test_cmd: py_test("from svc.caller import run; assert run(7) == 7; print('ok')"),
     }
 }
 
@@ -157,7 +175,24 @@ mod tests {
                     t.id,
                     s.region
                 );
+                for r in &s.reads {
+                    assert!(
+                        files.contains(r.as_str()),
+                        "{}: read dependency {} is not a seed file",
+                        t.id,
+                        r
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn only_the_interface_task_declares_a_dependency() {
+        // Coupling visibility: disjoint/shared have no cross-file reads; interface does.
+        let deps = |t: &PilotTask| t.subtasks.iter().any(|s| !s.reads.is_empty());
+        assert!(!deps(&py_shared_region_merge()));
+        assert!(!deps(&py_disjoint_independent()));
+        assert!(deps(&py_interface_break()));
     }
 }

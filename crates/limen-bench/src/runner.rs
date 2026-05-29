@@ -1,15 +1,20 @@
 //! The pilot runner: drive N agents through one coordination policy over one [`PilotTask`],
 //! score the result with a [`Executor`], and emit a [`PilotRun`] record.
 //!
-//! The decisive difference between the arms is the **read timing** (mirroring [`crate::arm`]):
+//! Three policies, increasing in coordination:
 //!
 //! - `Naive` — every agent reads the *initial* (stale) content of its file and writes back,
 //!   last-writer-wins. Two agents on one file lose all but the last edit.
-//! - `Limen` — agents serialize on the file via an advisory lease from the real
-//!   [`limen::store::Store`]; each reads the *current* content (post prior writes) before
-//!   editing, so contributions compose, and every change is witnessed for attribution.
+//! - `Limen` — agents serialize on their file via an advisory write lease from the real
+//!   [`limen::store::Store`]; each reads the *current* content before editing, so same-file
+//!   contributions compose, and every change is witnessed.
+//! - `LimenDeps` — Limen plus a **write×read advisory round**: each subtask declares the files
+//!   it *reads*; after the writes, any reader whose dependency was changed by another agent is
+//!   shown the new dependency and reconciles its own file. This recovers cross-region write skew
+//!   (a renamed symbol whose caller lives in another file) that per-file leases cannot —
+//!   advisory *information*, not enforcement or auto-merge.
 //!
-//! On disjoint files the two arms are identical — the fairness control.
+//! On disjoint files with no declared dependencies, all three arms are identical — the control.
 
 use crate::agent::ModelAgent;
 use crate::exec::{materialize, Executor};
@@ -17,7 +22,7 @@ use crate::model::{CompletionParams, ModelClient};
 use crate::pilot::{PilotSubtask, PilotTask};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// The coordination policy under test.
@@ -25,6 +30,7 @@ use std::path::Path;
 pub enum Coordination {
     Naive,
     Limen,
+    LimenDeps,
 }
 
 impl Coordination {
@@ -32,15 +38,16 @@ impl Coordination {
         match self {
             Coordination::Naive => "naive",
             Coordination::Limen => "limen",
+            Coordination::LimenDeps => "limen-deps",
         }
     }
 }
 
 /// Who produces each file edit.
 pub enum PilotAgent<'a> {
-    /// Deterministic, no-network agent: appends a per-label marker to the current content.
-    /// It does not solve the task (so `test_cmd` fails), but it exercises the coordination
-    /// plumbing on real files — naive loses a marker, Limen composes both.
+    /// Deterministic, no-network agent: appends a per-label marker on edit and a reconciliation
+    /// marker on reconcile. It does not solve the task (so `test_cmd` fails), but it exercises
+    /// the coordination plumbing on real files.
     Reference,
     /// A real coding agent over the inference hub.
     Model {
@@ -59,23 +66,56 @@ impl PilotAgent<'_> {
         }
     }
 
-    /// Produce the complete new content of the subtask's file from `current`.
-    async fn edit(&self, label: &str, subtask: &PilotSubtask, current: &str) -> Result<String> {
+    fn model_agent(&self, label: &str) -> Option<ModelAgent<'_>> {
         match self {
-            PilotAgent::Reference => Ok(format!("{current}\n# edit by {label}\n")),
+            PilotAgent::Reference => None,
             PilotAgent::Model {
                 client,
                 model,
                 params,
-            } => {
-                let agent = ModelAgent {
-                    label: label.to_string(),
-                    model: model.clone(),
-                    client,
-                    params: params.clone(),
-                };
+            } => Some(ModelAgent {
+                label: label.to_string(),
+                model: model.clone(),
+                client,
+                params: params.clone(),
+            }),
+        }
+    }
+
+    /// Produce the complete new content of the subtask's file from `current`.
+    async fn edit(&self, label: &str, subtask: &PilotSubtask, current: &str) -> Result<String> {
+        match self.model_agent(label) {
+            None => Ok(format!("{current}\n# edit by {label}\n")),
+            Some(agent) => {
                 agent
                     .edit_file(&subtask.prompt, &subtask.region, current)
+                    .await
+            }
+        }
+    }
+
+    /// Reconcile the subtask's file after a dependency changed.
+    async fn reconcile(
+        &self,
+        label: &str,
+        subtask: &PilotSubtask,
+        current: &str,
+        dep_path: &str,
+        dep_content: &str,
+    ) -> Result<String> {
+        match self.model_agent(label) {
+            None => Ok(format!(
+                "{current}\n# reconciled after {dep_path} changed\n"
+            )),
+            Some(agent) => {
+                agent
+                    .reconcile_file(
+                        &subtask.prompt,
+                        &subtask.region,
+                        current,
+                        dep_path,
+                        dep_content,
+                    )
                     .await
             }
         }
@@ -104,6 +144,22 @@ fn labels(n: usize) -> Vec<String> {
         .collect()
 }
 
+/// Indices of subtasks that read a file in `changed` which is *not* their own write region —
+/// i.e. readers whose cross-file dependency was altered by another agent (the write×read
+/// coupling the dependency-aware arm must surface). Pure and unit-tested.
+pub fn coupled_readers(subtasks: &[PilotSubtask], changed: &BTreeSet<String>) -> Vec<usize> {
+    subtasks
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            s.reads
+                .iter()
+                .any(|d| d != &s.region && changed.contains(d))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// Run one (task, agent, coordination) instance and score it.
 pub async fn run_pilot(
     task: &PilotTask,
@@ -122,33 +178,65 @@ pub async fn run_pilot(
     )?;
     let initial: BTreeMap<String, String> = task.initial.iter().cloned().collect();
     let labels = labels(task.n());
+    let read_file = |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap_or_default();
 
     match coord {
         Coordination::Naive => {
             for (i, sub) in task.subtasks.iter().enumerate() {
                 let stale = initial.get(&sub.region).cloned().unwrap_or_default();
                 let next = agent.edit(&labels[i], sub, &stale).await?;
-                let abs = root.join(&sub.region);
-                if let Some(parent) = abs.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&abs, next)?;
+                write_file(root, &sub.region, &next)?;
             }
         }
-        Coordination::Limen => {
+        Coordination::Limen | Coordination::LimenDeps => {
             let store = Store::open(&root.join(".limen/state.db")).await?;
+
+            // Write phase: serialize on the file, fresh read, witnessed write.
             for (i, sub) in task.subtasks.iter().enumerate() {
-                let abs = root.join(&sub.region);
-                let abs_s = abs.to_string_lossy().to_string();
+                let abs_s = root.join(&sub.region).to_string_lossy().to_string();
                 let lease = store
                     .acquire_lease(&abs_s, Intent::Write, &labels[i], DEFAULT_LEASE_TTL_MS)
                     .await?;
-                let fresh = std::fs::read_to_string(&abs).unwrap_or_default();
+                let fresh = read_file(&sub.region);
                 let next = agent.edit(&labels[i], sub, &fresh).await?;
                 store
                     .record_write(&lease.id, &abs_s, next.as_bytes())
                     .await?;
                 store.release_lease(&lease.id).await?;
+            }
+
+            // Advisory write×read round: reconcile readers whose dependency changed.
+            if coord == Coordination::LimenDeps {
+                let changed: BTreeSet<String> = task
+                    .initial
+                    .iter()
+                    .filter(|(rel, init)| &read_file(rel) != init)
+                    .map(|(rel, _)| rel.clone())
+                    .collect();
+
+                for i in coupled_readers(&task.subtasks, &changed) {
+                    let sub = &task.subtasks[i];
+                    let Some(dep) = sub
+                        .reads
+                        .iter()
+                        .find(|d| *d != &sub.region && changed.contains(*d))
+                    else {
+                        continue;
+                    };
+                    let dep_content = read_file(dep);
+                    let abs_s = root.join(&sub.region).to_string_lossy().to_string();
+                    let lease = store
+                        .acquire_lease(&abs_s, Intent::Write, &labels[i], DEFAULT_LEASE_TTL_MS)
+                        .await?;
+                    let current = read_file(&sub.region);
+                    let next = agent
+                        .reconcile(&labels[i], sub, &current, dep, &dep_content)
+                        .await?;
+                    store
+                        .record_write(&lease.id, &abs_s, next.as_bytes())
+                        .await?;
+                    store.release_lease(&lease.id).await?;
+                }
             }
         }
     }
@@ -156,10 +244,7 @@ pub async fn run_pilot(
     let outcome = exec.run(root, &task.test_cmd).await?;
     let mut files = BTreeMap::new();
     for (rel, _) in &task.initial {
-        files.insert(
-            rel.clone(),
-            std::fs::read_to_string(root.join(rel)).unwrap_or_default(),
-        );
+        files.insert(rel.clone(), read_file(rel));
     }
 
     Ok(PilotRun {
@@ -174,6 +259,14 @@ pub async fn run_pilot(
         stderr_tail: tail(&outcome.stderr, 400),
         files,
     })
+}
+
+fn write_file(root: &Path, rel: &str, content: &str) -> std::io::Result<()> {
+    let abs = root.join(rel);
+    if let Some(parent) = abs.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(abs, content)
 }
 
 /// Append a run record as one JSON line.
@@ -204,7 +297,21 @@ fn tail(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pilot::{py_disjoint_independent, py_shared_region_merge};
+    use crate::pilot::{py_disjoint_independent, py_interface_break, py_shared_region_merge};
+
+    #[test]
+    fn coupled_readers_finds_cross_file_dependencies() {
+        let task = py_interface_break();
+        // api.py changed → the caller (reads api.py) is a coupled reader; the api author is not.
+        let changed: BTreeSet<String> = ["svc/api.py".to_string()].into_iter().collect();
+        assert_eq!(coupled_readers(&task.subtasks, &changed), vec![1]);
+        // nothing changed → no readers
+        assert!(coupled_readers(&task.subtasks, &BTreeSet::new()).is_empty());
+        // a subtask reading only its own region is not "coupled" to itself
+        let shared = py_shared_region_merge();
+        let all_changed: BTreeSet<String> = shared.initial.iter().map(|(p, _)| p.clone()).collect();
+        assert!(coupled_readers(&shared.subtasks, &all_changed).is_empty());
+    }
 
     // The mechanism, on real files through the real Store, with a deterministic agent.
     #[tokio::test]
@@ -232,12 +339,46 @@ mod tests {
         );
     }
 
-    // Fairness control: on disjoint files, both arms keep both edits.
+    // The dependency-aware arm fires a reconciliation round on the coupled reader (and only it).
+    #[tokio::test]
+    async fn limen_deps_reconciles_the_coupled_reader() {
+        let task = py_interface_break();
+        let exec = Executor::Local;
+
+        // Plain Limen does NOT reconcile — the caller is untouched by any advisory round.
+        let limen = run_pilot(&task, &PilotAgent::Reference, Coordination::Limen, &exec, 1)
+            .await
+            .unwrap();
+        assert!(!limen.files["svc/caller.py"].contains("# reconciled"));
+
+        // LimenDeps reconciles the caller (reads svc/api.py, which the other agent changed)…
+        let deps = run_pilot(
+            &task,
+            &PilotAgent::Reference,
+            Coordination::LimenDeps,
+            &exec,
+            1,
+        )
+        .await
+        .unwrap();
+        assert!(
+            deps.files["svc/caller.py"].contains("# reconciled after svc/api.py changed"),
+            "the coupled reader should be reconciled: {:?}",
+            deps.files["svc/caller.py"]
+        );
+        // …but the api author (no read deps) is not reconciled.
+        assert!(!deps.files["svc/api.py"].contains("# reconciled"));
+    }
+
     #[tokio::test]
     async fn disjoint_is_unaffected_by_coordination() {
         let task = py_disjoint_independent();
         let exec = Executor::Local;
-        for coord in [Coordination::Naive, Coordination::Limen] {
+        for coord in [
+            Coordination::Naive,
+            Coordination::Limen,
+            Coordination::LimenDeps,
+        ] {
             let r = run_pilot(&task, &PilotAgent::Reference, coord, &exec, 1)
                 .await
                 .unwrap();
@@ -249,6 +390,9 @@ mod tests {
                 r.files["pkg/b.py"].contains("# edit by agent-B"),
                 "{coord:?}: b lost"
             );
+            // no cross-file deps → no reconciliation in any arm
+            assert!(!r.files["pkg/a.py"].contains("# reconciled"));
+            assert!(!r.files["pkg/b.py"].contains("# reconciled"));
         }
     }
 
@@ -258,8 +402,8 @@ mod tests {
         let path = tmp.path().join("runs.jsonl");
         let run = PilotRun {
             task_id: "t".into(),
-            coupling: "SharedRegion".into(),
-            coordination: "limen".into(),
+            coupling: "Interface".into(),
+            coordination: "limen-deps".into(),
             model: "reference".into(),
             n: 2,
             seed: 1,
@@ -273,6 +417,6 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert_eq!(body.lines().count(), 2);
         let parsed: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
-        assert_eq!(parsed["coordination"], "limen");
+        assert_eq!(parsed["coordination"], "limen-deps");
     }
 }

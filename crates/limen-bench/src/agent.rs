@@ -38,6 +38,43 @@ impl ModelAgent<'_> {
         extract_code_block(&reply)
             .with_context(|| format!("agent '{}' reply had no fenced code block", self.label))
     }
+
+    /// Reconcile `path` after a file it depends on changed. The advisory coordinator surfaced the
+    /// change (it does not edit for the agent); the agent updates its own file to stay consistent
+    /// — e.g. fixing a call to a renamed symbol. This is what recovers cross-region write skew
+    /// that per-file leases cannot.
+    pub async fn reconcile_file(
+        &self,
+        subtask: &str,
+        path: &str,
+        current: &str,
+        dep_path: &str,
+        dep_content: &str,
+    ) -> Result<String> {
+        let system = ChatMessage::system(
+            "You are a coding agent editing exactly one file. A file your file depends on has \
+             changed. Update your file so it stays correct against the new dependency — for \
+             example, fix imports or calls to a renamed symbol. Reply with ONLY the complete new \
+             content of the file inside a single fenced code block (```), and nothing else.",
+        );
+        let user = ChatMessage::user(format!(
+            "File you are editing: {path}\n\nIts current content:\n```\n{current}\n```\n\nA file \
+             it depends on, {dep_path}, has changed to:\n```\n{dep_content}\n```\n\nOriginal \
+             subtask: {subtask}\n\nReconcile {path} so it still works with the new {dep_path}. \
+             Return the COMPLETE new content of {path} in one fenced code block."
+        ));
+        let reply = self
+            .client
+            .complete(&self.model, &[system, user], &self.params)
+            .await
+            .with_context(|| format!("agent '{}' reconciling {path}", self.label))?;
+        extract_code_block(&reply).with_context(|| {
+            format!(
+                "agent '{}' reconcile reply had no fenced code block",
+                self.label
+            )
+        })
+    }
 }
 
 /// Extract the body of the first fenced ``` code block, ignoring an optional language tag on the

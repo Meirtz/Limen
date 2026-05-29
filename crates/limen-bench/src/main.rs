@@ -148,7 +148,11 @@ fn pilot_cmd() -> anyhow::Result<()> {
 
         for model in &models {
             for task in &tasks {
-                for coord in [Coordination::Naive, Coordination::Limen] {
+                for coord in [
+                    Coordination::Naive,
+                    Coordination::Limen,
+                    Coordination::LimenDeps,
+                ] {
                     for seed in 1..=seeds {
                         let agent = PilotAgent::Model {
                             client: &client,
