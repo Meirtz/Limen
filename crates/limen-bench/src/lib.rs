@@ -15,10 +15,12 @@
 
 pub mod agent;
 pub mod arm;
+pub mod exec;
 pub mod kv;
 pub mod model;
 pub mod oracle;
 pub mod pilot;
 pub mod record;
+pub mod runner;
 pub mod sim;
 pub mod task;
