@@ -28,7 +28,7 @@ pub enum Coordination {
 }
 
 impl Coordination {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Coordination::Naive => "naive",
             Coordination::Limen => "limen",

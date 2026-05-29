@@ -15,6 +15,7 @@ fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("models") => return list_models(),
         Some("complete") => return complete_cmd(),
+        Some("pilot") => return pilot_cmd(),
         _ => {}
     }
     println!("# Interference simulation (synthetic, deterministic — NOT measured LLM results)\n");
@@ -106,6 +107,107 @@ fn complete_cmd() -> anyhow::Result<()> {
             )
             .await?;
         println!("{out}");
+        anyhow::Ok(())
+    })
+}
+
+/// `limen-bench pilot <model-id> [more-model-ids...]` — run the real-agent pilot: every
+/// (model × toy task × {naive, limen} × seed) cell, scored by the local executor, written to a
+/// gitignored JSONL, with a pass-rate summary. Model ids are CLI args (never hardcoded).
+/// `LIMEN_PILOT_SEEDS` (default 1) sets the seeds per cell.
+fn pilot_cmd() -> anyhow::Result<()> {
+    use limen_bench::exec::Executor;
+    use limen_bench::model::{CompletionParams, ModelClient};
+    use limen_bench::pilot;
+    use limen_bench::runner::{append_jsonl, run_pilot, Coordination, PilotAgent};
+    use std::collections::BTreeMap;
+
+    let models: Vec<String> = std::env::args()
+        .skip(2)
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+    if models.is_empty() {
+        anyhow::bail!("usage: limen-bench pilot <model-id> [more-model-ids...]");
+    }
+    let seeds: u64 = std::env::var("LIMEN_PILOT_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let out = std::path::PathBuf::from("results/pilot.jsonl");
+    let short = |m: &str| m.rsplit('/').next().unwrap_or(m).to_string();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = ModelClient::from_env()?;
+        let exec = Executor::Local;
+        let tasks = pilot::all();
+        // (model, task, coordination) -> (passes, total)
+        let mut tally: BTreeMap<(String, String, String), (u32, u32)> = BTreeMap::new();
+
+        for model in &models {
+            for task in &tasks {
+                for coord in [Coordination::Naive, Coordination::Limen] {
+                    for seed in 1..=seeds {
+                        let agent = PilotAgent::Model {
+                            client: &client,
+                            model: model.clone(),
+                            params: CompletionParams {
+                                temperature: 0.0,
+                                max_tokens: 2048,
+                                seed: Some(seed),
+                            },
+                        };
+                        match run_pilot(task, &agent, coord, &exec, seed).await {
+                            Ok(run) => {
+                                append_jsonl(&out, &run)?;
+                                let cell = tally
+                                    .entry((
+                                        short(model),
+                                        task.id.clone(),
+                                        run.coordination.clone(),
+                                    ))
+                                    .or_default();
+                                cell.1 += 1;
+                                if run.passed {
+                                    cell.0 += 1;
+                                }
+                                println!(
+                                    "{:28} {:24} {:5} seed={seed} passed={}",
+                                    short(model),
+                                    task.id,
+                                    run.coordination,
+                                    run.passed
+                                );
+                            }
+                            Err(err) => {
+                                let cell = tally
+                                    .entry((
+                                        short(model),
+                                        task.id.clone(),
+                                        coord.label().to_string(),
+                                    ))
+                                    .or_default();
+                                cell.1 += 1;
+                                println!(
+                                    "{:28} {:24} {:5} seed={seed} ERROR: {err}",
+                                    short(model),
+                                    task.id,
+                                    coord.label()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("\n# Pass rate by (model, task, coordination) — results/pilot.jsonl\n");
+        println!("{:28} {:24} {:5} {:>7}", "model", "task", "coord", "pass");
+        for ((m, t, c), (pass, total)) in &tally {
+            println!("{m:28} {t:24} {c:5} {pass:>3}/{total}");
+        }
         anyhow::Ok(())
     })
 }

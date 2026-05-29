@@ -11,6 +11,19 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Max retry attempts on transient failures before giving up.
+const MAX_RETRIES: u32 = 4;
+
+/// Transient HTTP statuses worth retrying: rate limit and any 5xx (gateway / cold-start).
+fn is_retryable(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// Exponential backoff: 0.5s, 1s, 2s, 4s for attempts 1..=4.
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(500u64 * 2u64.pow(attempt.saturating_sub(1)))
+}
+
 /// One chat message in the OpenAI schema.
 #[derive(Clone, Debug, Serialize)]
 pub struct ChatMessage {
@@ -120,17 +133,41 @@ impl ModelClient {
         struct Resp {
             choices: Vec<Choice>,
         }
-        let resp: Resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&self.request_body(model, messages, params))
-            .send()
-            .await?
-            .error_for_status()
-            .context("chat/completions request failed")?
-            .json()
-            .await?;
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = self.request_body(model, messages, params);
+
+        // Bounded exponential backoff on transient failures (rate limits, gateway/cold-start
+        // 5xx, connect/timeout) — batch runs over many models hit these routinely.
+        let mut attempt = 0u32;
+        let response = loop {
+            match self
+                .http
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => {
+                    if is_retryable(r.status()) && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        tokio::time::sleep(backoff(attempt)).await;
+                        continue;
+                    }
+                    break r
+                        .error_for_status()
+                        .context("chat/completions request failed")?;
+                }
+                Err(e) if (e.is_timeout() || e.is_connect()) && attempt < MAX_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(backoff(attempt)).await;
+                    continue;
+                }
+                Err(e) => return Err(e).context("chat/completions request failed"),
+            }
+        };
+
+        let resp: Resp = response.json().await?;
         resp.choices
             .into_iter()
             .next()
@@ -180,6 +217,26 @@ mod tests {
         assert_eq!(body["stream"], false);
         assert_eq!(body["seed"], 7);
         assert_eq!(body["max_tokens"], 16);
+    }
+
+    #[test]
+    fn retryable_classifies_transient_statuses() {
+        use reqwest::StatusCode;
+        assert!(is_retryable(StatusCode::TOO_MANY_REQUESTS)); // 429
+        assert!(is_retryable(StatusCode::BAD_GATEWAY)); // 502
+        assert!(is_retryable(StatusCode::GATEWAY_TIMEOUT)); // 504
+        assert!(is_retryable(StatusCode::INTERNAL_SERVER_ERROR)); // 500
+        assert!(!is_retryable(StatusCode::NOT_FOUND)); // 404 — wrong model id, don't retry
+        assert!(!is_retryable(StatusCode::UNAUTHORIZED)); // 401 — bad key, don't retry
+        assert!(!is_retryable(StatusCode::OK));
+    }
+
+    #[test]
+    fn backoff_grows_exponentially() {
+        assert_eq!(backoff(1).as_millis(), 500);
+        assert_eq!(backoff(2).as_millis(), 1000);
+        assert_eq!(backoff(3).as_millis(), 2000);
+        assert_eq!(backoff(4).as_millis(), 4000);
     }
 
     #[test]
