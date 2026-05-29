@@ -261,37 +261,55 @@ pub async fn run_pilot(
                 store.release_lease(&lease.id).await?;
             }
 
-            // Advisory write×read round: reconcile readers whose dependency changed.
+            // Advisory write×read rounds: reconcile readers whose dependency changed, then
+            // propagate to readers of *those* reconciled files, until a fixpoint (capped). One hop
+            // fixes independent interface pairs; chained dependencies (A→B→C) need more.
             if coord == Coordination::LimenDeps {
-                let changed: BTreeSet<String> = task
+                const MAX_ROUNDS: usize = 4;
+                // Round-0 frontier: files the write phase changed vs the seed.
+                let mut frontier: BTreeSet<String> = task
                     .initial
                     .iter()
                     .filter(|(rel, init)| &read_file(rel) != init)
                     .map(|(rel, _)| rel.clone())
                     .collect();
 
-                for i in coupled_readers(&task.subtasks, &changed) {
-                    let sub = &task.subtasks[i];
-                    let Some(dep) = sub
-                        .reads
-                        .iter()
-                        .find(|d| *d != &sub.region && changed.contains(*d))
-                    else {
-                        continue;
-                    };
-                    let dep_content = read_file(dep);
-                    let abs_s = root.join(&sub.region).to_string_lossy().to_string();
-                    let lease = store
-                        .acquire_lease(&abs_s, Intent::Write, &labels[i], DEFAULT_LEASE_TTL_MS)
-                        .await?;
-                    let current = read_file(&sub.region);
-                    let next = agent
-                        .reconcile(&labels[i], sub, &current, dep, &dep_content)
-                        .await?;
-                    store
-                        .record_write(&lease.id, &abs_s, next.as_bytes())
-                        .await?;
-                    store.release_lease(&lease.id).await?;
+                for _round in 0..MAX_ROUNDS {
+                    let readers = coupled_readers(&task.subtasks, &frontier);
+                    if readers.is_empty() {
+                        break;
+                    }
+                    let mut next: BTreeSet<String> = BTreeSet::new();
+                    for i in readers {
+                        let sub = &task.subtasks[i];
+                        let Some(dep) = sub
+                            .reads
+                            .iter()
+                            .find(|d| *d != &sub.region && frontier.contains(*d))
+                        else {
+                            continue;
+                        };
+                        let dep_content = read_file(dep);
+                        let abs_s = root.join(&sub.region).to_string_lossy().to_string();
+                        let before = read_file(&sub.region);
+                        let lease = store
+                            .acquire_lease(&abs_s, Intent::Write, &labels[i], DEFAULT_LEASE_TTL_MS)
+                            .await?;
+                        let after = agent
+                            .reconcile(&labels[i], sub, &before, dep, &dep_content)
+                            .await?;
+                        store
+                            .record_write(&lease.id, &abs_s, after.as_bytes())
+                            .await?;
+                        store.release_lease(&lease.id).await?;
+                        if after != before {
+                            next.insert(sub.region.clone());
+                        }
+                    }
+                    if next.is_empty() {
+                        break;
+                    }
+                    frontier = next;
                 }
             }
         }
@@ -451,6 +469,31 @@ mod tests {
         );
         // …but the api author (no read deps) is not reconciled.
         assert!(!deps.files["svc/api.py"].contains("# reconciled"));
+    }
+
+    // The fixpoint loop reconciles every coupled reader in a multi-pair task and terminates.
+    #[tokio::test]
+    async fn limen_deps_reconciles_every_coupled_reader_in_a_mixed_task() {
+        let task = crate::pilot::mixed_coupling(1, 3); // 1 shared + 3 interface pairs
+        let exec = Executor::Local;
+        let run = run_pilot(
+            &task,
+            &PilotAgent::Reference,
+            Coordination::LimenDeps,
+            &exec,
+            1,
+        )
+        .await
+        .unwrap();
+        for i in 0..3 {
+            let caller = &run.files[&format!("if{i}/caller.py")];
+            assert!(
+                caller.contains("# reconciled"),
+                "if{i} caller not reconciled: {caller:?}"
+            );
+        }
+        // the shared-region pair has no cross-file dependency → never reconciled
+        assert!(!run.files["sh0/ops.py"].contains("# reconciled"));
     }
 
     #[tokio::test]
