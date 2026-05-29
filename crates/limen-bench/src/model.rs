@@ -1,19 +1,15 @@
-//! OpenAI-compatible client for NVIDIA's Enterprise Inference Hub.
+//! A thin, vendor-neutral OpenAI-compatible chat client.
 //!
-//! Base URL `https://inference-api.nvidia.com/v1`, `Authorization: Bearer <key>`. Open-source
-//! models (Kimi, GLM, DeepSeek, MiMo, Llama, Qwen, …) live under the `nvdev/<vendor>/<model>`
-//! namespace and have effectively unlimited quota for internal users. Everything is read from
-//! the environment so **no key is ever committed**:
+//! Works with any endpoint that speaks the OpenAI `/chat/completions` + `/models` API. Endpoint
+//! and credentials are read from the environment so **no key or provider detail is committed**:
 //!
-//! - `INFERENCE_HUB_API_KEY` (required) — generate at <https://inference.nvidia.com> → Key Management.
-//! - `INFERENCE_HUB_BASE_URL` (optional) — defaults to the URL above.
+//! - `INFERENCE_HUB_API_KEY` (required) — sent as `Authorization: Bearer <key>`.
+//! - `INFERENCE_HUB_BASE_URL` (required) — e.g. `https://your-endpoint/v1`.
 //!
-//! Discover exact model ids with the `limen-bench models` subcommand once a key is set.
+//! Discover the exact model ids your endpoint serves with the `limen-bench models` subcommand.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-
-const DEFAULT_BASE_URL: &str = "https://inference-api.nvidia.com/v1";
 
 /// One chat message in the OpenAI schema.
 #[derive(Clone, Debug, Serialize)]
@@ -66,10 +62,11 @@ impl ModelClient {
     /// Build from the environment (no secrets in code).
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("INFERENCE_HUB_API_KEY").context(
-            "set INFERENCE_HUB_API_KEY (generate one at https://inference.nvidia.com → Key Management)",
+            "set INFERENCE_HUB_API_KEY to your OpenAI-compatible endpoint's bearer token",
         )?;
-        let base_url = std::env::var("INFERENCE_HUB_BASE_URL")
-            .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+        let base_url = std::env::var("INFERENCE_HUB_BASE_URL").context(
+            "set INFERENCE_HUB_BASE_URL to your endpoint, e.g. https://your-endpoint/v1",
+        )?;
         Ok(Self::new(base_url, api_key))
     }
 
@@ -81,7 +78,7 @@ impl ModelClient {
         }
     }
 
-    /// `GET /v1/models` → available model ids (to discover the exact `nvdev/...` strings).
+    /// `GET /models` → available model ids (to discover the exact strings your endpoint serves).
     pub async fn list_models(&self) -> Result<Vec<String>> {
         #[derive(Deserialize)]
         struct Model {
@@ -167,9 +164,9 @@ mod tests {
 
     #[test]
     fn request_body_is_openai_shaped() {
-        let client = ModelClient::new("https://x/v1".into(), "k".into());
+        let client = ModelClient::new("https://api.example.com/v1".into(), "k".into());
         let body = client.request_body(
-            "nvdev/meta/llama-3.1-70b-instruct",
+            "vendor/model-name",
             &[ChatMessage::system("be terse"), ChatMessage::user("hi")],
             &CompletionParams {
                 temperature: 0.0,
@@ -177,7 +174,7 @@ mod tests {
                 seed: Some(7),
             },
         );
-        assert_eq!(body["model"], "nvdev/meta/llama-3.1-70b-instruct");
+        assert_eq!(body["model"], "vendor/model-name");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["content"], "hi");
         assert_eq!(body["stream"], false);
@@ -187,20 +184,20 @@ mod tests {
 
     #[test]
     fn base_url_trailing_slash_is_trimmed() {
-        let client = ModelClient::new("https://inference-api.nvidia.com/v1/".into(), "k".into());
-        assert_eq!(client.base_url, "https://inference-api.nvidia.com/v1");
+        let client = ModelClient::new("https://api.example.com/v1/".into(), "k".into());
+        assert_eq!(client.base_url, "https://api.example.com/v1");
     }
 
-    // Live check: needs network + INFERENCE_HUB_API_KEY. Run with:
-    //   INFERENCE_HUB_API_KEY=... cargo test -p limen-bench -- --ignored live_inference_hub
+    // Live check: needs network + INFERENCE_HUB_API_KEY + INFERENCE_HUB_BASE_URL + LIMEN_BENCH_MODEL.
+    //   INFERENCE_HUB_API_KEY=... INFERENCE_HUB_BASE_URL=... LIMEN_BENCH_MODEL=... \
+    //     cargo test -p limen-bench -- --ignored live_inference_hub
     #[tokio::test]
-    #[ignore = "live network + INFERENCE_HUB_API_KEY"]
+    #[ignore = "live network + endpoint env"]
     async fn live_inference_hub_smoke() {
         let client = ModelClient::from_env().unwrap();
         let models = client.list_models().await.unwrap();
         assert!(!models.is_empty(), "expected a non-empty model catalog");
-        let model = std::env::var("LIMEN_BENCH_MODEL")
-            .unwrap_or_else(|_| "nvdev/meta/llama-3.1-70b-instruct".into());
+        let model = std::env::var("LIMEN_BENCH_MODEL").expect("set LIMEN_BENCH_MODEL");
         let out = client
             .complete(
                 &model,
