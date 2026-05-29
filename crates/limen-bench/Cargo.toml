@@ -1,0 +1,15 @@
+[package]
+name = "limen-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Measurement harness for concurrent-agent interference (the apparatus + a deterministic simulation)"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+limen = { path = "../limen" }
+tempfile.workspace = true
+tokio = { workspace = true }

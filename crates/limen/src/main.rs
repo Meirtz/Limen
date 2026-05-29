@@ -3,12 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-mod identity;
-mod mcp;
-mod resource;
-mod store;
-
-use store::Store;
+use limen::store::{self, Store};
+use limen::{identity, mcp};
 
 /// Ready-to-paste MCP server config (Claude Code `settings.json` shape).
 const MCP_CONFIG_SNIPPET: &str = r#"  {

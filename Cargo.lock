@@ -827,6 +827,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "limen-bench"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "limen",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
