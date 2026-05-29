@@ -151,6 +151,9 @@ pub struct PilotRun {
     pub model: String,
     pub n: usize,
     pub seed: u64,
+    /// A-priori fraction of subtasks with a cross-file dependency (the sweep's independent var).
+    #[serde(default)]
+    pub coupling_fraction: f64,
     #[serde(default)]
     pub temperature: f32,
     #[serde(default)]
@@ -329,6 +332,7 @@ pub async fn run_pilot(
         model: agent.model_name(),
         n: task.n(),
         seed,
+        coupling_fraction: task.coupling_fraction(),
         temperature,
         max_tokens,
         task_hash: task_hash(task),
@@ -533,6 +537,7 @@ mod tests {
             model: "reference".into(),
             n: 2,
             seed: 1,
+            coupling_fraction: 0.5,
             temperature: 0.0,
             max_tokens: 0,
             task_hash: "deadbeef".into(),

@@ -229,6 +229,13 @@ pub fn mixed_coupling(n_shared: usize, n_interface: usize) -> PilotTask {
     }
 }
 
+/// The mix sequence for a coupling sweep: keep the total pair count at `max_pairs` and move pairs
+/// from same-file to cross-file, so the coupling fraction rises monotonically from 0. Returns
+/// `(n_shared, n_interface)` steps.
+pub fn sweep_plan(max_pairs: usize) -> Vec<(usize, usize)> {
+    (0..=max_pairs).map(|i| (max_pairs - i, i)).collect()
+}
+
 /// All toy tasks.
 pub fn all() -> Vec<PilotTask> {
     vec![
@@ -299,6 +306,23 @@ mod tests {
             }
         }
         assert!(!t.test_cmd.is_empty());
+    }
+
+    #[test]
+    fn sweep_plan_raises_coupling_monotonically() {
+        let plan = sweep_plan(3);
+        assert_eq!(plan, vec![(3, 0), (2, 1), (1, 2), (0, 3)]);
+        let fracs: Vec<f64> = plan
+            .iter()
+            .map(|&(s, i)| mixed_coupling(s, i).coupling_fraction())
+            .collect();
+        for w in fracs.windows(2) {
+            assert!(
+                w[1] >= w[0],
+                "coupling fraction should not decrease: {fracs:?}"
+            );
+        }
+        assert_eq!(fracs[0], 0.0);
     }
 
     #[test]

@@ -16,6 +16,7 @@ fn main() -> anyhow::Result<()> {
         Some("models") => return list_models(),
         Some("complete") => return complete_cmd(),
         Some("pilot") => return pilot_cmd(),
+        Some("sweep") => return sweep_cmd(),
         Some("analyze") => return analyze_cmd(),
         _ => {}
     }
@@ -221,6 +222,90 @@ fn pilot_cmd() -> anyhow::Result<()> {
         println!("{:28} {:24} {:5} {:>7}", "model", "task", "coord", "pass");
         for ((m, t, c), (pass, total)) in &tally {
             println!("{m:28} {t:24} {c:5} {pass:>3}/{total}");
+        }
+        anyhow::Ok(())
+    })
+}
+
+/// `limen-bench sweep <model-id...>` — the coupling-threshold sweep: hold total work constant and
+/// move pairs from same-file to cross-file (rising coupling fraction), running every arm at each
+/// step. Writes `results/sweep.jsonl`. `LIMEN_SWEEP_PAIRS` (default 3) sets the total pairs;
+/// `LIMEN_PILOT_SEEDS`/`LIMEN_PILOT_TEMP`/`LIMEN_PILOT_MAX_TOKENS` share the pilot's knobs.
+fn sweep_cmd() -> anyhow::Result<()> {
+    use limen_bench::exec::Executor;
+    use limen_bench::model::{CompletionParams, ModelClient};
+    use limen_bench::pilot::{mixed_coupling, sweep_plan};
+    use limen_bench::runner::{append_jsonl, run_pilot, Coordination, PilotAgent};
+
+    let models: Vec<String> = std::env::args()
+        .skip(2)
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+    if models.is_empty() {
+        anyhow::bail!("usage: limen-bench sweep <model-id> [more-model-ids...]");
+    }
+    let env_usize = |k: &str, d: usize| {
+        std::env::var(k)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
+    };
+    let max_pairs = env_usize("LIMEN_SWEEP_PAIRS", 3);
+    let seeds = env_usize("LIMEN_PILOT_SEEDS", 1) as u64;
+    let temperature: f32 = std::env::var("LIMEN_PILOT_TEMP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let max_tokens = env_usize("LIMEN_PILOT_MAX_TOKENS", 2048) as u32;
+    let out = std::path::PathBuf::from("results/sweep.jsonl");
+    let short = |m: &str| m.rsplit('/').next().unwrap_or(m).to_string();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = ModelClient::from_env()?;
+        let exec = Executor::Local;
+        for model in &models {
+            for (n_shared, n_interface) in sweep_plan(max_pairs) {
+                let task = mixed_coupling(n_shared, n_interface);
+                for coord in [
+                    Coordination::Naive,
+                    Coordination::LimenPlacebo,
+                    Coordination::Limen,
+                    Coordination::LimenDeps,
+                ] {
+                    for seed in 1..=seeds {
+                        let agent = PilotAgent::Model {
+                            client: &client,
+                            model: model.clone(),
+                            params: CompletionParams {
+                                temperature,
+                                max_tokens,
+                                seed: Some(seed),
+                            },
+                        };
+                        match run_pilot(&task, &agent, coord, &exec, seed).await {
+                            Ok(run) => {
+                                append_jsonl(&out, &run)?;
+                                println!(
+                                    "{:20} cf={:.2} {:13} seed={seed} passed={}",
+                                    short(model),
+                                    run.coupling_fraction,
+                                    run.coordination,
+                                    run.passed
+                                );
+                            }
+                            Err(err) => println!(
+                                "{:20} cf={:.2} {:13} seed={seed} ERROR: {err}",
+                                short(model),
+                                task.coupling_fraction(),
+                                coord.label()
+                            ),
+                        }
+                    }
+                }
+            }
         }
         anyhow::Ok(())
     })
