@@ -53,6 +53,21 @@ impl PilotTask {
     pub fn n(&self) -> usize {
         self.subtasks.len()
     }
+
+    /// Fraction of subtasks that carry a cross-file read dependency (a write×read coupling) — an
+    /// a-priori measure of how interface-coupled the task is, independent of any run. 0 means all
+    /// work is same-file or disjoint; higher means more cross-file skew potential.
+    pub fn coupling_fraction(&self) -> f64 {
+        if self.subtasks.is_empty() {
+            return 0.0;
+        }
+        let cross = self
+            .subtasks
+            .iter()
+            .filter(|s| s.reads.iter().any(|r| r != &s.region))
+            .count();
+        cross as f64 / self.subtasks.len() as f64
+    }
 }
 
 fn py_test(import_and_assert: &str) -> Vec<String> {
@@ -146,6 +161,74 @@ pub fn py_interface_break() -> PilotTask {
     }
 }
 
+/// A **mixed-coupling** task: `n_shared` same-file merges plus `n_interface` cross-file
+/// rename/caller pairs, each in its own package, scored by one test that imports everything.
+/// Dialing `n_interface` vs `n_shared` sweeps the fraction of cross-file (write×read) coupling —
+/// the independent variable for the coupling-threshold experiment. Each pair is two subtasks
+/// (N = `2 * (n_shared + n_interface)`).
+pub fn mixed_coupling(n_shared: usize, n_interface: usize) -> PilotTask {
+    let mut initial = Vec::new();
+    let mut subtasks = Vec::new();
+    let mut asserts = Vec::new();
+
+    for i in 0..n_shared {
+        let pkg = format!("sh{i}");
+        initial.push((format!("{pkg}/__init__.py"), String::new()));
+        initial.push((format!("{pkg}/ops.py"), "\"\"\"ops\"\"\"\n".into()));
+        subtasks.push(PilotSubtask::new(
+            "Add a function `def add(a, b): return a + b` to this module. Keep all existing content.",
+            format!("{pkg}/ops.py"),
+        ));
+        subtasks.push(PilotSubtask::new(
+            "Add a function `def mul(a, b): return a * b` to this module. Keep all existing content.",
+            format!("{pkg}/ops.py"),
+        ));
+        asserts.push(format!(
+            "from {pkg}.ops import add as a{i}, mul as m{i}; assert a{i}(2, 3) == 5 and m{i}(2, 3) == 6"
+        ));
+    }
+    for i in 0..n_interface {
+        let pkg = format!("if{i}");
+        initial.push((format!("{pkg}/__init__.py"), String::new()));
+        initial.push((
+            format!("{pkg}/api.py"),
+            "def handle(req):\n    return req\n".into(),
+        ));
+        initial.push((
+            format!("{pkg}/caller.py"),
+            format!("from {pkg}.api import handle\n\ndef run(x):\n    return handle(x)\n"),
+        ));
+        subtasks.push(PilotSubtask::new(
+            "Rename the function `handle` to `process` in this file (update its definition).",
+            format!("{pkg}/api.py"),
+        ));
+        subtasks.push(
+            PilotSubtask::new(
+                "Add a docstring to the `run` function. Keep the existing call as-is.",
+                format!("{pkg}/caller.py"),
+            )
+            .reading(format!("{pkg}/api.py")),
+        );
+        asserts.push(format!(
+            "from {pkg}.caller import run as r{i}; assert r{i}(7) == 7"
+        ));
+    }
+    asserts.push("print('ok')".to_string());
+
+    PilotTask {
+        id: format!("mixed-s{n_shared}-i{n_interface}"),
+        language: "python".into(),
+        coupling: if n_interface > 0 {
+            Coupling::Interface
+        } else {
+            Coupling::SharedRegion
+        },
+        initial,
+        subtasks,
+        test_cmd: vec!["python".into(), "-c".into(), asserts.join("; ")],
+    }
+}
+
 /// All toy tasks.
 pub fn all() -> Vec<PilotTask> {
     vec![
@@ -185,6 +268,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mixed_coupling_is_well_formed_and_measures_its_coupling() {
+        // 0 interface → no cross-file coupling; all shared.
+        let t = mixed_coupling(2, 0);
+        assert_eq!(t.n(), 4);
+        assert_eq!(t.coupling_fraction(), 0.0);
+
+        // 2 interface, 0 shared → the 2 callers (of 4 subtasks) carry cross-file reads.
+        let t = mixed_coupling(0, 2);
+        assert_eq!(t.n(), 4);
+        assert!((t.coupling_fraction() - 0.5).abs() < 1e-9);
+
+        // 1 shared + 1 interface → 1 cross reader of 4 subtasks.
+        let t = mixed_coupling(1, 1);
+        assert!((t.coupling_fraction() - 0.25).abs() < 1e-9);
+
+        // Well-formed: every region and read is a seed file.
+        let files: BTreeSet<&str> = t.initial.iter().map(|(p, _)| p.as_str()).collect();
+        for s in &t.subtasks {
+            assert!(
+                files.contains(s.region.as_str()),
+                "region {} missing",
+                s.region
+            );
+            for r in &s.reads {
+                assert!(files.contains(r.as_str()), "read {r} missing");
+            }
+        }
+        assert!(!t.test_cmd.is_empty());
     }
 
     #[test]
