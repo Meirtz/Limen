@@ -1,6 +1,8 @@
 # Limen
 
-> **A workspace coordination daemon for AI agents.** When several AI coding agents share one repository, Limen hands each a boundary-scoped **write lease** and a **witnessed audit trail** — so they stop silently overwriting each other. It does not run your agents; it keeps them from colliding.
+> **Limen coordinates concurrent, autonomous agents that share mutable state.** It hands each agent an advisory, boundary-scoped, time-bounded **write lease** and keeps a **witnessed audit trail**, so independent agents stop silently overwriting each other's work. It does not run your agents — it keeps them from colliding.
+>
+> The category is general; the first proving ground is concrete: **multiple AI coding agents — Claude Code, Cursor, Codex, and their sub-agents — sharing one repository.**
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue) ![rust](https://img.shields.io/badge/rust-1.88%2B-orange) ![protocol](https://img.shields.io/badge/MCP-server-black)
 
@@ -8,7 +10,7 @@
 
 Limen is a single small Rust daemon, exposed as an [MCP](https://modelcontextprotocol.io) server. It sits *beneath* the agents that share a workspace, at the one place they collide: the write. Its posture is deliberate — **servant, not ruler.** Like Git, MCP, OAuth, and OpenTelemetry, it *describes and issues*; it does not govern. It does not start, stop, schedule, route, or supervise any agent.
 
-The narrow first target ("the beachhead") is multi-harness AI coding on one git repo. The durable idea behind it is general: **coordination of concurrent autonomous agents over shared, mutable state**, via three primitives — an advisory **lease**, a **witness** trail, and a per-agent **identity** — ported from forty years of distributed-systems concurrency control and joined to the [zero-trust-for-AI-agents](https://claude.com/blog/zero-trust-for-ai-agents) playbook.
+**The durable idea is general:** coordinate *any* concurrent, autonomous agents over *any* shared, mutable state — through three primitives: an advisory **lease** (authority over a region of a namespace), a **witness** trail (attribution), and a per-agent **identity**. The state is a filesystem today, but nothing in the primitive is bound to files or to coding — the writers can be research, ops, computer-use, or pipeline agents, and the state can be configuration, a key-value store, or infrastructure. Limen ports forty years of distributed-systems concurrency control (leases, advisory locking) into the [zero-trust-for-AI-agents](https://claude.com/blog/zero-trust-for-ai-agents) era, and proves it on the sharpest, most painful instance first: **AI coding agents on a shared repo** (multi-harness coding is the *beachhead*, not the definition).
 
 ---
 

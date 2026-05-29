@@ -1,6 +1,8 @@
 # Limen
 
-> **一个面向 AI agent 的 workspace 协调守护进程。** 当多个 AI coding agent 共享同一个仓库时，Limen 给每个 agent 一张按边界划定的**写入租约**和一条**可追溯的见证审计**——让它们不再互相静默覆盖。它不运行你的 agent，只防止它们撞车。
+> **Limen 协调共享可变状态的并发自治 agent。** 它给每个 agent 一张建议式、按边界划定、带时限的**写入租约**，并保留一条**可追溯的见证审计**——让相互独立的 agent 不再静默覆盖彼此的工作。它不运行你的 agent，只防止它们撞车。
+>
+> 范畴是通用的，首个验证场景是具体的：**多个 AI coding agent——Claude Code、Cursor、Codex 及其 sub-agent——共享同一个仓库。**
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue) ![rust](https://img.shields.io/badge/rust-1.88%2B-orange) ![protocol](https://img.shields.io/badge/MCP-server-black)
 
@@ -8,7 +10,7 @@
 
 Limen 是一个单一的小 Rust 守护进程，以 [MCP](https://modelcontextprotocol.io) server 形态暴露。它坐在共享工作区的 agent *之下*，就在它们唯一会碰撞的地方：写入。它的姿态是刻意的——**仆从，不是统治者。** 像 Git、MCP、OAuth、OpenTelemetry 一样，它*描述并发放*，不治理。它不启动、不停止、不调度、不路由、不监督任何 agent。
 
-它最初的窄目标（"滩头"）是多 harness 的 AI coding 共享一个 git 仓库。背后那个持久的想法是通用的：**对并发自治 agent 在共享可变状态上的协调**，凭三个原语——建议式**租约（lease）**、**见证（witness）**轨迹、per-agent **身份（identity）**——从四十年的分布式系统并发控制移植而来，并入 [AI agent 零信任](https://claude.com/blog/zero-trust-for-ai-agents)的范式。
+**那个持久的想法是通用的：** 协调*任意*并发自治 agent 在*任意*共享可变状态上的行为——凭三个原语：建议式**租约（lease）**（对命名空间某区域的写入授权）、**见证（witness）**轨迹（归因）、per-agent **身份（identity）**。今天的状态是文件系统，但原语本身不绑定于文件或 coding——写者可以是 research、ops、computer-use 或管线 agent，状态可以是配置、KV 存储或基础设施。Limen 把四十年的分布式系统并发控制（租约、建议式锁）移植进 [AI agent 零信任](https://claude.com/blog/zero-trust-for-ai-agents)时代，并先在最锋利、最痛的实例上验证：**共享仓库上的 AI coding agent**（多 harness coding 是*滩头*，不是定义）。
 
 ---
 

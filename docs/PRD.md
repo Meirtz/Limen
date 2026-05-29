@@ -53,6 +53,8 @@
 
 > **Limen is a workspace coordination daemon.** When multiple AI coding agents share a repo, Limen gives each one a signed identity, a boundary-scoped lease, and a witnessed audit trail. It does not run your agent — it just keeps them from stepping on each other.
 
+> **范畴 vs 滩头（重要）**：通用**范畴**是「协调并发自治 agent 在*共享可变状态*上的行为」，凭 lease + witness + identity 三原语——写者不限于 coding agent，状态不限于文件系统。"多 AI coding agent 共享一个 repo" 是**首个滩头/验证场景**，不是定义。对外文案（README/标题）须先讲通用范畴，再落到滩头。详见 [`spec/boundaries.md`](spec/boundaries.md) 的"通用化轴"。
+
 ### 2.2 姿态：仆从，不是统治者
 
 能被广泛采用的同类基础设施都是**仆从姿态**——它们从不声称"统治"任何东西：
