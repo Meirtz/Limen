@@ -20,6 +20,22 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   (English canonical + `.zh.md` Chinese companions) and a `related-work.md` paper
   scaffold; `docs/PRD.md`; and a verified, annotated `docs/references.md`.
 - README in English (`README.md`) and Chinese (`README.zh.md`).
+- a general, **resource-pluggable** core: the lease / conflict / witness logic is
+  resource-agnostic (`store.rs` coordinates regions of a namespace), with the
+  filesystem as the one shipped `Resource` (`resource.rs`). Adding another backend
+  is a new `Resource`, not a rewrite.
+- `docs/experiments.md`: the executable hero-experiment design (Pareto-dominance thesis).
+
+### Hardened (from an adversarial code review)
+
+- **Security:** mediated writes refuse `..` path traversal, so a write-lease holder
+  cannot escape its region (the escape also falsified the audit).
+- **Correctness:** a typed conflict matrix replaces the stringly-typed check — an
+  existing `propose` lease no longer wrongly blocks a later write.
+- **Robustness:** the MCP stdio loop survives a non-UTF-8 line (per-message `-32700`)
+  instead of terminating; batches / bare scalars / missing-method return `-32600`;
+  regions are validated (reject empty / bare `/` / `..`); SQLite `busy_timeout` is set;
+  a pre-epoch clock warns instead of silently clamping.
 
 ### Changed
 

@@ -26,3 +26,16 @@ Project maintainer: `@Meirtz`
 - Initial triage target: within a reasonable best-effort window
 - Fixes may land on a private branch first and be released publicly afterward
 - Public disclosure should wait until the maintainer confirms a fix or mitigation path
+
+## Known Limitations (alpha)
+
+Limen is an **advisory** coordination layer, not a sandbox. Know the boundaries before relying on it:
+
+- **Advisory, not enforced.** A lease conflicts only with other lease attempts. An agent that bypasses Limen and writes directly is not stopped; the witness trail attributes mediated writes, but cannot see writes that never went through `limen_write`. Mandatory enforcement is future work.
+- **Filesystem-resource hardening is partial.** Mediated writes refuse `..` path traversal, so a lease holder cannot lexically escape its region. Two gaps remain, tracked for a later release:
+  - **Symlinked directories** inside a region can still redirect a mediated write outside it (the witness would then record the in-region target, not the resolved destination). Kernel-enforced containment (`openat2` `RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`) is planned.
+  - **Region aliasing**: differently-spelled descriptors of the same directory (`src/` vs `./src/` vs an absolute path) are not yet normalized, so two such leases may both be granted. Pass consistent, normalized paths until region canonicalization lands.
+- **Single machine, single namespace.** No multi-machine or multi-tenant isolation.
+- **Asserted identity.** Agent identity is a plaintext label, not cryptographically verified (ed25519 planned).
+
+These are deliberate alpha scope boundaries, documented so you can judge whether Limen's guarantees match your threat model.
