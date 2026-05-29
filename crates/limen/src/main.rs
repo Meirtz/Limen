@@ -34,6 +34,13 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: i64,
     },
+    /// Show per-agent attribution for every witnessed write to a path.
+    Attribute {
+        /// The file path to attribute.
+        path: String,
+        #[arg(long, default_value = ".limen/state.db")]
+        db: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -81,6 +88,27 @@ async fn main() -> Result<()> {
                     hash = short_hash,
                     lease = w.lease_id,
                 );
+            }
+            Ok(())
+        }
+        Command::Attribute { path, db } => {
+            let store = Store::open(&db).await.context("opening store")?;
+            let rows = store.attribute_path(&path).await?;
+            if rows.is_empty() {
+                println!("No witnessed writes for path: {path}");
+            } else {
+                println!("Attribution for {path} ({} writes):", rows.len());
+                for (w, agent) in &rows {
+                    let short_hash = &w.content_hash[..8.min(w.content_hash.len())];
+                    println!(
+                        "  {ts}  agent={agent}  bytes={bytes}  hash={hash}  lease={lease}",
+                        ts = w.written_at,
+                        agent = agent,
+                        bytes = w.bytes_written,
+                        hash = short_hash,
+                        lease = w.lease_id,
+                    );
+                }
             }
             Ok(())
         }

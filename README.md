@@ -96,7 +96,8 @@ That's it — Claude Code, Cursor, Codex, and others can now call three tools:
 Inspect what happened at any time:
 
 ```bash
-limen audit --db .limen/state.db        # active leases + recent witnessed writes
+limen audit --db .limen/state.db          # active leases + recent witnessed writes
+limen attribute src/auth/login.rs         # who changed this path, when, under which lease
 ```
 
 ---

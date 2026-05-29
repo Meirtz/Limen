@@ -96,7 +96,8 @@ cargo install --path crates/limen     # 或：cargo build -p limen --release
 随时查看发生了什么：
 
 ```bash
-limen audit --db .limen/state.db        # 活跃租约 + 最近的见证写入
+limen audit --db .limen/state.db          # 活跃租约 + 最近的见证写入
+limen attribute src/auth/login.rs         # 谁、何时、在哪张租约下改了这个路径
 ```
 
 ---

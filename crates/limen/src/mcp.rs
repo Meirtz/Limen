@@ -199,7 +199,11 @@ async fn handle_tool_call(store: &Store, params: &Value) -> Result<Value, JsonRp
         "limen_acquire" => tool_acquire(store, &call.arguments).await,
         "limen_write" => tool_write(store, &call.arguments).await,
         "limen_release" => tool_release(store, &call.arguments).await,
-        other => return Err(JsonRpcError::invalid_params(format!("unknown tool: {other}"))),
+        other => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "unknown tool: {other}"
+            )))
+        }
     };
 
     Ok(match tool_result {
@@ -331,10 +335,7 @@ mod tests {
         }));
         let resp = handle_message(&store, &req).await.unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
-        let names: Vec<&str> = tools
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"limen_acquire"));
         assert!(names.contains(&"limen_write"));
         assert!(names.contains(&"limen_release"));

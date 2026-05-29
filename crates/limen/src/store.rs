@@ -88,7 +88,11 @@ pub enum StoreError {
     LeaseInactive { id: String, state: LeaseState },
 
     #[error("lease {id} expired at {expires_at}; now is {now}")]
-    LeaseExpired { id: String, expires_at: i64, now: i64 },
+    LeaseExpired {
+        id: String,
+        expires_at: i64,
+        now: i64,
+    },
 
     #[error("lease {id} intent is {intent:?}, not write")]
     NotAWriteLease { id: String, intent: Intent },
@@ -134,6 +138,7 @@ impl Store {
         Ok(store)
     }
 
+    #[cfg(test)]
     pub async fn open_in_memory() -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::new()
             .filename(":memory:")

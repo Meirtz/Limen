@@ -1,16 +1,6 @@
 [workspace]
 members = [
   "crates/limen",
-  "crates/crawfish-types",
-  "crates/crawfish-core",
-  "crates/crawfish-store-sqlite",
-  "crates/crawfish-runtime",
-  "crates/crawfish-cli",
-  "crates/crawfish-mcp",
-  "crates/crawfish-harness-local",
-  "crates/crawfish-openclaw",
-  "crates/crawfish-a2a",
-  "crates/crawfish-adapter-api",
 ]
 resolver = "2"
 
@@ -18,29 +8,15 @@ resolver = "2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 version = "0.1.0-alpha.1"
-repository = "https://github.com/Meirtz/Crawfish"
-homepage = "https://github.com/Meirtz/Crawfish"
-documentation = "https://github.com/Meirtz/Crawfish"
+repository = "https://github.com/Meirtz/Limen"
+homepage = "https://github.com/Meirtz/Limen"
+documentation = "https://github.com/Meirtz/Limen"
 rust-version = "1.88.0"
 authors = ["Meirtz"]
 
 [workspace.dependencies]
 anyhow = "1.0.98"
-assert_cmd = "2.0.17"
-async-trait = "0.1.88"
-axum = { version = "0.8.8", features = ["http1", "json", "tokio"] }
-bytes = "1.10.1"
 clap = { version = "4.5.37", features = ["derive", "env"] }
-futures-util = "0.3.31"
-http-body-util = "0.1.3"
-hyper = { version = "1.7.0", features = ["client", "http1", "server"] }
-hyper-util = { version = "0.1.17", features = ["client-legacy", "http1", "tokio"] }
-hyperlocal = "0.9.1"
-jsonschema = "0.33.0"
-predicates = "3.1.3"
-regex = "1.12.2"
-reqwest = { version = "0.12.15", default-features = false, features = ["json", "stream", "rustls-tls"] }
-rmcp = "1.1.1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 sha2 = "0.10.9"
@@ -48,9 +24,6 @@ sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "migra
 tempfile = "3.20.0"
 thiserror = "2.0.16"
 tokio = { version = "1.45.1", features = ["full"] }
-tokio-tungstenite = { version = "0.27.0", features = ["rustls-tls-webpki-roots"] }
-toml = "0.8.23"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
-walkdir = "2.5.0"
