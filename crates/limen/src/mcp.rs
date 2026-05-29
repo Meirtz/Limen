@@ -19,16 +19,35 @@ const SERVER_NAME: &str = "limen";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub async fn run_stdio(store: Arc<Store>) -> Result<()> {
-    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin).lines();
+    let mut buf: Vec<u8> = Vec::new();
 
-    while let Some(line) = reader.next_line().await? {
-        if line.trim().is_empty() {
+    loop {
+        buf.clear();
+        // Read raw bytes so a non-UTF-8 line becomes a per-message parse error
+        // rather than terminating the whole session.
+        if reader.read_until(b'\n', &mut buf).await? == 0 {
+            break; // EOF
+        }
+        while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+            buf.pop();
+        }
+        if buf.is_empty() {
             continue;
         }
-        tracing::debug!(message = %line, "<- stdin");
-        if let Some(response) = handle_message(&store, &line).await {
+        let response = match std::str::from_utf8(&buf) {
+            Ok(line) => {
+                tracing::debug!(message = %line, "<- stdin");
+                handle_message(&store, line).await
+            }
+            Err(_) => Some(error_response(
+                Value::Null,
+                -32700,
+                "parse error: request was not valid UTF-8".to_string(),
+            )),
+        };
+        if let Some(response) = response {
             let mut payload = serde_json::to_string(&response)?;
             payload.push('\n');
             tracing::debug!(message = %payload.trim(), "-> stdout");
@@ -44,30 +63,44 @@ pub async fn handle_message(store: &Store, line: &str) -> Option<Value> {
     let request: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
-            return Some(json!({
-                "jsonrpc": "2.0",
-                "id": Value::Null,
-                "error": { "code": -32700, "message": format!("parse error: {e}") }
-            }));
+            return Some(error_response(
+                Value::Null,
+                -32700,
+                format!("parse error: {e}"),
+            ))
         }
     };
 
-    let id = request.get("id").cloned();
-    let is_notification = id.is_none();
-    let method = request
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("")
-        .to_string();
-    let params = request.get("params").cloned().unwrap_or(Value::Null);
-
-    if is_notification {
-        // Standard MCP notifications are no-ops here.
-        tracing::debug!(method = %method, "notification");
-        return None;
+    // A request must be a single JSON-RPC object. Batches and bare scalars are
+    // Invalid Request; Limen does not implement batching.
+    if !request.is_object() {
+        return Some(error_response(
+            Value::Null,
+            -32600,
+            "invalid request: expected a single JSON-RPC object".to_string(),
+        ));
     }
 
-    let result: Result<Value, JsonRpcError> = match method.as_str() {
+    let id = request.get("id").cloned();
+    let method = request.get("method").and_then(|m| m.as_str());
+
+    // No id => notification: never reply.
+    let Some(id) = id else {
+        tracing::debug!(method = ?method, "notification");
+        return None;
+    };
+
+    // Has an id but no usable method => Invalid Request.
+    let Some(method) = method else {
+        return Some(error_response(
+            id,
+            -32600,
+            "invalid request: missing or non-string method".to_string(),
+        ));
+    };
+
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+    let result: Result<Value, JsonRpcError> = match method {
         "initialize" => Ok(initialize_response()),
         "tools/list" => Ok(tools_list_response()),
         "tools/call" => handle_tool_call(store, &params).await,
@@ -76,17 +109,14 @@ pub async fn handle_message(store: &Store, line: &str) -> Option<Value> {
     };
 
     Some(match result {
-        Ok(value) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": value,
-        }),
-        Err(err) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": err.code, "message": err.message },
-        }),
+        Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+        Err(err) => error_response(id, err.code, err.message),
     })
+}
+
+/// Build a JSON-RPC error response object.
+fn error_response(id: Value, code: i32, message: String) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
 struct JsonRpcError {
@@ -434,5 +464,28 @@ mod tests {
         let store = fresh().await;
         let resp = handle_message(&store, "{not json").await.unwrap();
         assert_eq!(resp["error"]["code"], -32700);
+    }
+
+    #[tokio::test]
+    async fn batch_request_returns_invalid_request() {
+        let store = fresh().await;
+        let batch = req_str(json!([{ "jsonrpc": "2.0", "id": 1, "method": "ping" }]));
+        let resp = handle_message(&store, &batch).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn bare_scalar_returns_invalid_request() {
+        let store = fresh().await;
+        let resp = handle_message(&store, "42").await.unwrap();
+        assert_eq!(resp["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn missing_method_with_id_returns_invalid_request() {
+        let store = fresh().await;
+        let req = req_str(json!({ "jsonrpc": "2.0", "id": 5 }));
+        let resp = handle_message(&store, &req).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32600);
     }
 }

@@ -50,6 +50,18 @@ impl Rpc {
         serde_json::from_str(&line).expect("parse response json")
     }
 
+    /// Send raw bytes (including any trailing newline) and read one response line.
+    fn call_raw(&mut self, bytes: &[u8]) -> Value {
+        self.stdin.write_all(bytes).expect("write raw request");
+        self.stdin.flush().expect("flush raw request");
+        let line = self
+            .lines
+            .next()
+            .expect("a response line")
+            .expect("read response line");
+        serde_json::from_str(&line).expect("parse response json")
+    }
+
     /// Close stdin and wait for a clean exit.
     fn shutdown(mut self) {
         drop(self.stdin);
@@ -150,6 +162,25 @@ fn end_to_end_mcp_lifecycle_over_stdio() {
         }}
     }));
     assert!(!structured(&resp)["lease_id"].as_str().unwrap().is_empty());
+
+    rpc.shutdown();
+}
+
+#[test]
+fn survives_invalid_utf8_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("state.db");
+    let mut rpc = Rpc::spawn(&db);
+
+    // A non-UTF-8 byte must produce a per-message parse error, not kill the server.
+    let resp = rpc.call_raw(&[0xff, 0xfe, b'\n']);
+    assert_eq!(resp["error"]["code"], -32700);
+
+    // The session is still alive and answers the next valid request.
+    let resp = rpc.call(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
+    }));
+    assert_eq!(resp["result"]["serverInfo"]["name"], "limen");
 
     rpc.shutdown();
 }
