@@ -175,6 +175,10 @@ fn tools_list_response() -> Value {
                         "ttl_ms": {
                             "type": "integer",
                             "description": "Lease lifetime in milliseconds. Defaults to 300000 (5 min)."
+                        },
+                        "signature": {
+                            "type": "string",
+                            "description": "ed25519 signature (hex) over the canonical acquire message; required only if agent_label is registered (see `limen register` / `limen sign`)."
                         }
                     },
                     "required": ["path_pattern", "intent", "agent_label"]
@@ -280,6 +284,8 @@ struct AcquireArgs {
     agent_label: String,
     #[serde(default)]
     ttl_ms: Option<i64>,
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 async fn tool_acquire(store: &Store, args: &Value) -> Result<Value, String> {
@@ -287,6 +293,14 @@ async fn tool_acquire(store: &Store, args: &Value) -> Result<Value, String> {
         serde_json::from_value(args.clone()).map_err(|e| format!("invalid arguments: {e}"))?;
     let intent = Intent::parse(&a.intent).map_err(|e| e.to_string())?;
     let ttl = a.ttl_ms.unwrap_or(DEFAULT_LEASE_TTL_MS);
+    // Verify cryptographic identity. A no-op for unregistered agents (plaintext
+    // advisory path); a registered agent must present a valid signature.
+    let message =
+        crate::identity::acquire_message(&a.path_pattern, intent.as_str(), &a.agent_label);
+    store
+        .authorize(&a.agent_label, &message, a.signature.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
     match store
         .acquire_lease(&a.path_pattern, intent, &a.agent_label, ttl)
         .await
@@ -560,5 +574,59 @@ mod tests {
         let req = req_str(json!({ "jsonrpc": "2.0", "id": 5 }));
         let resp = handle_message(&store, &req).await.unwrap();
         assert_eq!(resp["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn registered_agent_requires_valid_signature() {
+        let store = fresh().await;
+        let (sk, pk) = crate::identity::generate_keypair();
+        store.register_agent("signed-agent", &pk).await.unwrap();
+
+        let acquire = |sig: Option<&str>| {
+            let mut arguments = json!({
+                "path_pattern": "src/",
+                "intent": "write",
+                "agent_label": "signed-agent"
+            });
+            if let Some(s) = sig {
+                arguments["signature"] = json!(s);
+            }
+            req_str(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "limen_acquire", "arguments": arguments }
+            }))
+        };
+
+        // missing signature -> rejected
+        let resp = handle_message(&store, &acquire(None)).await.unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+
+        // valid signature -> accepted
+        let msg = crate::identity::acquire_message("src/", "write", "signed-agent");
+        let sig = crate::identity::sign(&sk, &msg).unwrap();
+        let resp = handle_message(&store, &acquire(Some(&sig))).await.unwrap();
+        assert_eq!(resp["result"]["isError"], false);
+    }
+
+    #[tokio::test]
+    async fn unregistered_agent_uses_plaintext_path() {
+        let store = fresh().await;
+        let req = req_str(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "limen_acquire",
+                "arguments": {
+                    "path_pattern": "src/",
+                    "intent": "write",
+                    "agent_label": "plain-agent"
+                }
+            }
+        }));
+        let resp = handle_message(&store, &req).await.unwrap();
+        assert_eq!(resp["result"]["isError"], false);
     }
 }

@@ -113,6 +113,15 @@ limen audit --db .limen/state.db          # active leases + recent witnessed cha
 limen attribute src/auth/login.rs         # who changed this, when, under which lease
 ```
 
+**Optional — cryptographic identity.** Register an agent to upgrade its label from *asserted* to *ed25519-verified*:
+
+```bash
+limen register claude-code:sess-A                # generate a keypair; print the public key
+limen sign claude-code:sess-A src/auth/ write    # signature to pass as limen_acquire's `signature`
+```
+
+Once registered, that agent's `limen_acquire` must carry a valid `signature` (the lease is then a bearer capability for the writes that follow); unregistered labels keep the plaintext path.
+
 ---
 
 ## Concepts
@@ -123,7 +132,7 @@ Limen has a small, general vocabulary — each term backed by a real type in the
 | --- | --- | --- |
 | **namespace** | the addressable space of mutable resources being coordinated | the workspace's files |
 | **region** (a *limen*) | a slice of the namespace a lease covers | a path or directory prefix (`src/auth/`) |
-| **identity** | who is requesting | plaintext agent label (`claude-code:sess-A`); ed25519 planned |
+| **identity** | who is requesting | plaintext label, or a registered **ed25519** key (`limen register`) the agent signs each acquire with |
 | **lease** | time-bounded authority over a region | intent + TTL (5 min) + state |
 | **intent** | what the holder means to do | `read` / `write` / `propose` |
 | **witness** | recorded evidence of a mediated change | target, bytes, SHA-256, time, agent |
@@ -191,7 +200,7 @@ Limen is **alpha** and honest about it.
 | MVP (lease + write + release + audit, stdio MCP) | implemented |
 | resources | one (filesystem); the model is resource-pluggable |
 | enforcement | **advisory only** — agents can bypass; witness still attributes |
-| identity | plaintext label (ed25519 signing planned) |
+| identity | plaintext by default; opt-in **ed25519** signed identity (`limen register` / `limen sign`) |
 | scope | single machine, single namespace |
 | region matching | literal path / directory prefix (no globs yet) |
 

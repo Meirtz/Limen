@@ -15,7 +15,7 @@ Limen has a small, **general** vocabulary. The terms describe coordination over 
 | **namespace** | The addressable space of mutable resources being coordinated. | the workspace's files |
 | **resource** | A pluggable backend that gives a namespace meaning: how regions are compared and how a mediated change is applied. v0.1 ships exactly one. | the filesystem |
 | **region** (a *limen*) | A slice of the namespace that a lease covers — the threshold an agent crosses to change something. | a literal path or directory prefix (`src/auth/`) |
-| **identity** | Who is requesting. A plaintext label today; ed25519-signed identity is planned. Until then, identity is *asserted*, not proven. | `agent_label`, e.g. `claude-code:sess-A` |
+| **identity** | Who is requesting. A plaintext label by default; an agent can `register` an ed25519 key and then sign each acquire, making identity *cryptographically rooted* rather than merely *asserted*. Opt-in and back-compatible. | `agent_label`, e.g. `claude-code:sess-A` |
 | **lease** | An advisory, region-scoped, time-bounded grant of authority to act under a given intent. The central primitive. A crashed/hung holder's lease simply expires (Gray & Cheriton 1989), so it cannot deadlock the namespace. | `store::Lease` |
 | **intent** | What the lease holder means to do: `read`, `write`, or `propose`. Determines conflict behavior. | `store::Intent` |
 | **TTL** | Lease lifetime (default 5 minutes). On expiry the lease no longer conflicts; `acquire` expires stale leases before checking conflicts. | `DEFAULT_LEASE_TTL_MS` |

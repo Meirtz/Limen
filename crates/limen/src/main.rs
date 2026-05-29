@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod identity;
 mod mcp;
 mod resource;
 mod store;
@@ -57,6 +58,25 @@ enum Command {
         /// Workspace directory to initialize (defaults to the current directory).
         #[arg(default_value = ".")]
         dir: PathBuf,
+    },
+    /// Register an ed25519 identity for an agent: generate a keypair, store the
+    /// public key, and write the private key to `.limen/keys/<label>.ed25519`.
+    Register {
+        /// Agent label to register (e.g. `claude-code:sess-A`).
+        label: String,
+        #[arg(long, default_value = ".limen/state.db")]
+        db: PathBuf,
+    },
+    /// Print the ed25519 signature a registered agent passes to `limen_acquire`.
+    Sign {
+        /// Agent label (must have a private key under `.limen/keys/`).
+        label: String,
+        /// The region (path or directory prefix) to be acquired.
+        path_pattern: String,
+        /// The intent: read | write | propose.
+        intent: String,
+        #[arg(long, default_value = ".limen/state.db")]
+        db: PathBuf,
     },
 }
 
@@ -153,5 +173,57 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
+        Command::Register { label, db } => {
+            let store = Store::open(&db).await.context("opening store")?;
+            let (private_hex, public_hex) = identity::generate_keypair();
+            store.register_agent(&label, &public_hex).await?;
+            let dir = keys_dir(&db);
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+            let key_path = dir.join(format!("{label}.ed25519"));
+            write_private_key(&key_path, &private_hex)?;
+            println!("Registered agent '{label}'.");
+            println!("  public key:  {public_hex}");
+            println!("  private key: {}", key_path.display());
+            println!();
+            println!("Keep the private key safe. A registered agent must sign each acquire — use");
+            println!("`limen sign {label} <region> <intent>` and pass the result as the `signature` arg.");
+            Ok(())
+        }
+        Command::Sign {
+            label,
+            path_pattern,
+            intent,
+            db,
+        } => {
+            // Normalize the intent so the signed message matches the server's.
+            let intent = store::Intent::parse(&intent)?.as_str();
+            let key_path = keys_dir(&db).join(format!("{label}.ed25519"));
+            let private_hex = std::fs::read_to_string(&key_path)
+                .with_context(|| format!("reading private key {}", key_path.display()))?;
+            let message = identity::acquire_message(&path_pattern, intent, &label);
+            println!("{}", identity::sign(private_hex.trim(), &message)?);
+            Ok(())
+        }
     }
+}
+
+/// The directory holding agent private keys, derived from the state-db path
+/// (`.limen/state.db` -> `.limen/keys`).
+fn keys_dir(db: &Path) -> PathBuf {
+    db.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join("keys")
+}
+
+/// Write a private key to disk, owner-read/write only on Unix.
+fn write_private_key(path: &Path, private_hex: &str) -> Result<()> {
+    std::fs::write(path, private_hex).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("setting permissions on {}", path.display()))?;
+    }
+    Ok(())
 }

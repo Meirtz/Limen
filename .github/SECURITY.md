@@ -36,6 +36,6 @@ Limen is an **advisory** coordination layer, not a sandbox. Know the boundaries 
   - **Symlinked directories** inside a region can still redirect a mediated write outside it (the witness would then record the in-region target, not the resolved destination). Kernel-enforced containment (`openat2` `RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`) is planned.
   - **Region aliasing** is lexically normalized (`src/`, `./src/`, and `src//auth/` compare as one region), but relative-vs-absolute spellings of the same path are still distinct — that needs a workspace-root anchor (planned). Pass paths consistently relative or absolute.
 - **Single machine, single namespace.** No multi-machine or multi-tenant isolation.
-- **Asserted identity.** Agent identity is a plaintext label, not cryptographically verified (ed25519 planned).
+- **Identity is plaintext by default.** Opt-in **ed25519** signed identity is available (`limen register` / `limen sign`): a registered agent must sign its `acquire`, verified server-side. Signing requires a cooperating agent or wrapper to attach the signature; a harness that calls the tool directly uses the plaintext path. The lease id then acts as a bearer capability for the subsequent write/renew/release.
 
 These are deliberate alpha scope boundaries, documented so you can judge whether Limen's guarantees match your threat model.

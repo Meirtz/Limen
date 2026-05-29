@@ -117,6 +117,18 @@ pub enum StoreError {
     #[error("invalid region '{0}'")]
     InvalidRegion(String),
 
+    #[error("agent '{0}' is already registered")]
+    AgentAlreadyRegistered(String),
+
+    #[error("agent '{agent}' is registered; a valid signature is required")]
+    SignatureRequired { agent: String },
+
+    #[error("invalid signature")]
+    SignatureInvalid,
+
+    #[error("invalid key: {0}")]
+    InvalidKey(String),
+
     #[error("invalid intent '{0}' (expected read|write|propose)")]
     InvalidIntent(String),
 
@@ -435,6 +447,58 @@ impl Store {
             })
             .collect()
     }
+
+    /// Register an agent's ed25519 public key (hex). Errors if the label is already
+    /// registered (rotate by removing it first) or the key is malformed.
+    pub async fn register_agent(
+        &self,
+        label: &str,
+        public_key_hex: &str,
+    ) -> Result<(), StoreError> {
+        crate::identity::validate_public_key(public_key_hex)?;
+        if self.agent_public_key(label).await?.is_some() {
+            return Err(StoreError::AgentAlreadyRegistered(label.to_string()));
+        }
+        sqlx::query("INSERT INTO agents (label, public_key, registered_at) VALUES (?1, ?2, ?3)")
+            .bind(label)
+            .bind(public_key_hex)
+            .bind(now_millis())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The registered public key (hex) for `label`, if any.
+    pub async fn agent_public_key(&self, label: &str) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query("SELECT public_key FROM agents WHERE label = ?1")
+            .bind(label)
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(r) => Ok(Some(r.try_get("public_key")?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Authorize an action by `label` over `message`: a *registered* agent must
+    /// present a valid signature; an unregistered label takes the plaintext
+    /// advisory path. Identity is opt-in and back-compatible.
+    pub async fn authorize(
+        &self,
+        label: &str,
+        message: &str,
+        signature: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let Some(public_key) = self.agent_public_key(label).await? else {
+            return Ok(());
+        };
+        match signature {
+            Some(sig) => crate::identity::verify(&public_key, message, sig),
+            None => Err(StoreError::SignatureRequired {
+                agent: label.to_string(),
+            }),
+        }
+    }
 }
 
 fn row_to_lease(row: &SqliteRow) -> Result<Lease, StoreError> {
@@ -505,6 +569,11 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         FOREIGN KEY(lease_id) REFERENCES leases(id)
     )"#,
     r#"CREATE INDEX IF NOT EXISTS idx_writes_path ON writes(path)"#,
+    r#"CREATE TABLE IF NOT EXISTS agents (
+        label         TEXT PRIMARY KEY,
+        public_key    TEXT NOT NULL,
+        registered_at INTEGER NOT NULL
+    )"#,
 ];
 
 #[cfg(test)]
@@ -739,5 +808,31 @@ mod tests {
         let attrib = store.attribute_path(&good_path).await.unwrap();
         assert_eq!(attrib.len(), 1);
         assert_eq!(attrib[0].1, "agent-A");
+    }
+
+    #[tokio::test]
+    async fn register_and_authorize() {
+        let store = Store::open_in_memory().await.unwrap();
+        let (sk, pk) = crate::identity::generate_keypair();
+        store.register_agent("a", &pk).await.unwrap();
+        // duplicate registration is rejected
+        assert!(matches!(
+            store.register_agent("a", &pk).await.unwrap_err(),
+            StoreError::AgentAlreadyRegistered(_)
+        ));
+        // unregistered label: plaintext path, no signature needed
+        store.authorize("other", "msg", None).await.unwrap();
+        // registered label: signature required
+        assert!(matches!(
+            store.authorize("a", "msg", None).await.unwrap_err(),
+            StoreError::SignatureRequired { .. }
+        ));
+        // registered label: a valid signature is accepted, a bad one rejected
+        let sig = crate::identity::sign(&sk, "msg").unwrap();
+        store.authorize("a", "msg", Some(&sig)).await.unwrap();
+        assert!(matches!(
+            store.authorize("a", "msg", Some("00")).await.unwrap_err(),
+            StoreError::SignatureInvalid
+        ));
     }
 }
