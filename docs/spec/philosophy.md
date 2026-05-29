@@ -6,7 +6,7 @@
 
 Limen coordinates **concurrent, autonomous agents that mutate shared state**. It issues an advisory, boundary-scoped, time-bounded **lease**, mediates the write and records a **witness** trail (bytes, SHA-256, agent label, timestamp), and ties both to a per-agent **identity** — exposed as an MCP server (`limen_acquire` / `limen_write` / `limen_release`).
 
-That is the **general category**. Its first concrete **beachhead** is multi-harness AI coding over a git repository: heterogeneous coding agents (Claude Code, Cursor, Codex, Gemini CLI) and their parallel sub-agents sharing one working tree, with no layer keeping them from stepping on each other. The coding case is an *instance*, not the definition — the way Git began on Linux kernel source and MCP began on the desktop without *being* those.
+That is the **general model**, and it is the organizing principle for everything here — the docs and the code. The shared state is reached through a **resource**: a pluggable backend that says how regions compare and how a mediated change is applied. Limen ships exactly one resource today — a **filesystem** — with one worked example that makes the problem vivid: heterogeneous coding agents (Claude Code, Cursor, Codex) and their parallel sub-agents sharing one working tree. That coding case is an *example*, not the definition and not the spine — the way Git began on Linux kernel source and MCP began on the desktop without *being* those.
 
 This document is the intellectual case for that shape. It is deliberately built on **distributed-systems concurrency control** and **zero-trust security**, not on LLM orchestration — because that is the part of the problem that will outlive any model generation.
 
@@ -72,13 +72,13 @@ The infrastructure that won was descriptive, not governing. Limen joins it.
 
 MCP states its own charter this way: it "focuses solely on the protocol for context exchange — it does not dictate how AI applications use LLMs or manage the provided context." Limen adopts the identical stance — one more advisory MCP server, not a control plane. This is also a correction of course: Limen's predecessor over-reached into "control plane / law layer / governed swarm" language, and that over-reach is exactly what this project is escaping.
 
-### 4. A general primitive, proven on a narrow beachhead
+### 4. The model is general; the filesystem is one resource
 
-The durable category is **coordination of concurrent autonomous agents over shared mutable state**. The beachhead is **multi-harness coding over a git repo via MCP**. Holding the category while shipping a narrow first instance is the strategy, not a contradiction.
+The definition is general — **coordination of concurrent autonomous agents over shared mutable state** — and the design follows it: the core knows only namespaces, regions, resources, leases, witnesses, and identities. A **resource** is the seam where the general model meets a concrete world; v0.1 implements one (the filesystem) and measures it on multi-harness coding. Designing the model generally while shipping a single resource is the discipline that keeps the project broad in concept and small in surface — not a staged narrowing, and emphatically not feature sprawl (one resource, not a speculative zoo of backends).
 
-The category long predates LLMs. It is the **blackboard** pattern (Hearsay-II, Erman et al. 1980; Nii 1986): many independent agents cooperating by mutating one shared, region-partitioned state. It is the **tuple space** (Gelernter, *Linda*, 1985), whose atomic destructive `in` is essentially "claim authority over a region before acting," and whose motto — coordination is orthogonal to computation — is Limen's stance verbatim. Limen generalizes these with one deliberate inversion: where Hearsay-II *centralizes* a scheduler that decides which knowledge source runs, Limen removes central scheduling — the writers self-coordinate by claiming regions. That is servant-not-ruler at the architectural level. The **actor model** (Hewitt 1973; Agha 1986) is the foil: it dodges the whole problem by never sharing state. Limen accepts the premise actors reject — today's heterogeneous harnesses *already* share one repo and cannot be rewritten as pure actors — so the shared state must be coordinated, not wished away.
+The model long predates LLMs. It is the **blackboard** pattern (Hearsay-II, Erman et al. 1980; Nii 1986): many independent agents cooperating by mutating one shared, region-partitioned state. It is the **tuple space** (Gelernter, *Linda*, 1985), whose atomic destructive `in` is essentially "claim authority over a region before acting," and whose motto — coordination is orthogonal to computation — is Limen's stance verbatim. Limen generalizes these with one deliberate inversion: where Hearsay-II *centralizes* a scheduler that decides which knowledge source runs, Limen removes central scheduling — the writers self-coordinate by claiming regions. That is servant-not-ruler at the architectural level. The **actor model** (Hewitt 1973; Agha 1986) is the foil: it dodges the whole problem by never sharing state. Limen accepts the premise actors reject — today's heterogeneous harnesses *already* share one repo and cannot be rewritten as pure actors — so the shared state must be coordinated, not wished away.
 
-The generalization axes (writers, namespace, region, transport, locality) are tabulated in [`boundaries.md`](boundaries.md).
+The generalization axes (writers, namespace, region, resource, locality) are tabulated in [`boundaries.md`](boundaries.md).
 
 ### 5. Three coordinatable zero-trust primitives (and why the fourth is only partial)
 
@@ -141,6 +141,6 @@ A philosophy that only lists its strengths is marketing. These are the real edge
 
 ## One line
 
-Limen is **advisory, region-scoped, time-bounded prevention-before-write over arbitrary shared mutable state** — the fifty-year lost-update cure (leases, advisory locking, mutual exclusion, blackboard/tuple-space coordination) ported to non-deterministic, lock-naïve, mutually-blind agents, joined to the zero-trust triple of identity + per-task lease + witnessed audit, shipped servant-not-ruler on a sharp coding beachhead in service of a durable general category.
+Limen is **advisory, region-scoped, time-bounded prevention-before-change over arbitrary shared mutable state** — the fifty-year lost-update cure (leases, advisory locking, mutual exclusion, blackboard/tuple-space coordination) ported to non-deterministic, lock-naïve, mutually-blind agents, joined to the zero-trust triple of identity + per-task lease + witnessed audit, shipped servant-not-ruler as a general model with the filesystem as its first resource.
 
 For what Limen explicitly is *not*, see [`boundaries.md`](boundaries.md).

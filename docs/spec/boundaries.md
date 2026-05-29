@@ -8,17 +8,17 @@ A project's boundaries are as load-bearing as its features. Limen's predecessor 
 
 ---
 
-## The category, and the beachhead
+## The general model, and its first resource
 
-**General category (the durable definition).** Limen coordinates **concurrent, autonomous agents operating on shared, mutable state**, via three primitives:
+**The general model (the definition).** Limen coordinates **concurrent, autonomous agents operating on shared, mutable state**, via three primitives:
 
-- an advisory, boundary-scoped, time-bounded **lease** (authority to mutate a region of a namespace),
-- a **witness** trail (attribution and forensics over every mediated write),
+- an advisory, region-scoped, time-bounded **lease** (authority to change a region of a namespace),
+- a **witness** trail (attribution and forensics over every mediated change),
 - and a per-agent **identity**.
 
-The boundary — *limen*, Latin for *threshold* — is a region of a namespace. The category is rooted in distributed-systems concurrency control and zero-trust security, not in LLM orchestration.
+A **region** — *limen*, Latin for *threshold* — is a slice of a namespace. The model is rooted in distributed-systems concurrency control and zero-trust security, not in LLM orchestration, and it is the organizing principle for the code as much as the docs.
 
-**Beachhead (today's first instantiation — one case, not the definition).** Multiple AI coding harnesses (Claude Code, Cursor, Codex, Gemini CLI) and their parallel sub-agents sharing one git working tree on one machine, integrated as an MCP server, advisory-first. Here the shared state is the filesystem and the regions are path patterns — but the primitive is not specific to files or to coding.
+**The first resource (today).** A namespace is reached through a *resource* — a pluggable backend defining how regions compare and how a mediated change is applied. v0.1 ships exactly one: the **filesystem**. Its worked example is several AI coding agents (Claude Code, Cursor, Codex) and their sub-agents sharing one git working tree, integrated as an MCP server, advisory-first. The filesystem is *an example resource*, not the definition — nothing in the model is specific to files or to coding.
 
 ## In one sentence
 
@@ -107,11 +107,11 @@ Two leases conflict when their boundaries overlap (prefix containment) **and** t
 
 ---
 
-## Generalization axes (how the one beachhead opens onto the category)
+## Generalization axes (how the model meets each world)
 
-The beachhead is narrow on purpose. Each axis below shows how the *same* primitive generalizes — and signals that nothing in the design is welded to code files.
+The filesystem is one resource on purpose. Each axis below shows how the *same* model generalizes — and signals that nothing in the design is welded to code files.
 
-| Axis | Beachhead (today) | General category (durable) |
+| Axis | Filesystem resource (today) | The general model |
 | --- | --- | --- |
 | **Writers** | AI coding harnesses + their sub-agents | any uncoordinated autonomous agents — research, ops, computer-use, data pipelines, even mixed human/agent |
 | **Shared state** | a git repo / filesystem | any namespace of mutable resources — documents, KV stores, config, infrastructure, external system state |
@@ -119,7 +119,7 @@ The beachhead is narrow on purpose. Each axis below shows how the *same* primiti
 | **Transport** | an MCP server over stdio | any protocol where an agent can request authority |
 | **Locality** | one machine, one workspace | the lineage (Chubby, etcd, ZooKeeper) is already distributed |
 
-The strategy is to **own the category while shipping a narrow first instance** — the arc Git took from kernel source and MCP took from the desktop. The discipline is to let the category guide what Limen *could* become without letting it inflate what Limen *is today*.
+The discipline is to **design to the general model while shipping one resource** — the arc Git took from kernel source and MCP took from the desktop. The model guides what Limen *could* coordinate without inflating what Limen *is today*: one advisory primitive, one resource.
 
 ---
 

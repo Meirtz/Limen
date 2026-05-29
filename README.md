@@ -1,51 +1,60 @@
 # Limen
 
-> **Limen coordinates concurrent, autonomous agents that share mutable state.** It hands each agent an advisory, boundary-scoped, time-bounded **write lease** and keeps a **witnessed audit trail**, so independent agents stop silently overwriting each other's work. It does not run your agents — it keeps them from colliding.
->
-> The category is general; the first proving ground is concrete: **multiple AI coding agents — Claude Code, Cursor, Codex, and their sub-agents — sharing one repository.**
+> **Limen coordinates concurrent, autonomous agents that share mutable state.** It hands each agent an advisory, boundary-scoped, time-bounded **lease** and keeps a **witnessed audit trail**, so independent agents stop silently overwriting each other's work. It does not run your agents — it keeps them from colliding.
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue) ![rust](https://img.shields.io/badge/rust-1.88%2B-orange) ![protocol](https://img.shields.io/badge/MCP-server-black)
 
 **English** · [中文](README.zh.md)
 
-Limen is a single small Rust daemon, exposed as an [MCP](https://modelcontextprotocol.io) server. It sits *beneath* the agents that share a workspace, at the one place they collide: the write. Its posture is deliberate — **servant, not ruler.** Like Git, MCP, OAuth, and OpenTelemetry, it *describes and issues*; it does not govern. It does not start, stop, schedule, route, or supervise any agent.
+Limen is a single small Rust daemon, exposed as an [MCP](https://modelcontextprotocol.io) server. It sits *beneath* the agents that share state, at the one place they collide: the change. Its posture is deliberate — **servant, not ruler.** Like Git, MCP, OAuth, and OpenTelemetry, it *describes and issues*; it does not govern. It does not start, stop, schedule, route, or supervise any agent.
 
-**The durable idea is general:** coordinate *any* concurrent, autonomous agents over *any* shared, mutable state — through three primitives: an advisory **lease** (authority over a region of a namespace), a **witness** trail (attribution), and a per-agent **identity**. The state is a filesystem today, but nothing in the primitive is bound to files or to coding — the writers can be research, ops, computer-use, or pipeline agents, and the state can be configuration, a key-value store, or infrastructure. Limen ports forty years of distributed-systems concurrency control (leases, advisory locking) into the [zero-trust-for-AI-agents](https://claude.com/blog/zero-trust-for-ai-agents) era, and proves it on the sharpest, most painful instance first: **AI coding agents on a shared repo** (multi-harness coding is the *beachhead*, not the definition).
+The model is general. A **lease** is time-bounded authority over a **region** of a **namespace**; a **witness** records every mediated change against an **identity**. None of it is bound to files — a namespace is any addressable space of mutable resources (a filesystem, a key-value store, a config tree, a set of cloud objects), and the agents can be coding, research, ops, or computer-use agents, or plain pipelines. Limen ports forty years of distributed-systems concurrency control — leases, advisory locking — into the [zero-trust-for-AI-agents](https://claude.com/blog/zero-trust-for-ai-agents) era.
+
+It ships today with one resource implemented — a **filesystem** — and one example that makes the problem vivid: several AI coding agents sharing a repository.
 
 ---
 
 ## The problem
 
-Today a single developer's repo can have, at the same moment:
+When several autonomous agents change shared state with nothing coordinating them, they reintroduce the classic concurrency hazards — the ones databases and version control spent decades taming:
+
+| Hazard | What happens |
+| --- | --- |
+| **Lost update** | two agents change the same resource; the later write silently erases the earlier agent's work |
+| **Broken invariant** | one agent changes something another still relies on; the combined state is inconsistent — a build breaks, a schema mismatches |
+| **Stale / torn read** | an agent acts on a snapshot another has already moved past |
+| **No attribution** | something breaks and nothing records *which* agent changed *what*, under whose intent |
+
+Databases and version control *earned* their safety with locks, snapshots, and merge discipline. Today's agents inherited none of it: they are non-deterministic writers, never written to take a lock, blind to each other. Limen ports the cure to the layer where the writers are agents and the shared state is something nobody locked.
+
+**A concrete example** — one developer's repository, at a single moment:
 
 - a **Claude Code** session refactoring `src/auth/`
-- a **Cursor** window open with a stale buffer
+- a **Cursor** window open on a stale buffer
 - a **Codex** task running tests in the background
-- 2–3 **sub-agents** that Claude Code spawned, editing different files in parallel
+- 2–3 **sub-agents** Claude Code spawned, editing different files in parallel
 
-**No layer coordinates them.** The consequences are concrete and reproducible:
-
-| Failure | Consequence |
-| --- | --- |
-| Two agents write the same file at once | the later write clobbers the earlier — the first agent's work is **silently lost** |
-| Agent A changes a function signature; Agent B still calls the old one | **build break** / tests fail |
-| Cursor saves a buffer based on an old version | overwrites a change another agent just committed |
-| A background agent deletes a file the foreground is editing | the editor writes back a "deleted" ghost |
-| A bug appears and `git blame` shows only the human | **no attribution** — which agent, which prompt? |
-
-This is the classic **lost-update / write-skew** problem (Berenson et al., SIGMOD 1995) — except databases and version control *earned* their safety with locks, snapshots, and merge discipline, and agents inherited none of it. They are non-deterministic writers, never written to take a lock, blind to each other. Limen ports the cure to the layer where the writers are agents and the shared state is a filesystem nobody locked.
+Nothing coordinates them, so every hazard above is concrete and reproducible — and `git blame` shows only the human.
 
 ---
 
 ## How it works
 
-Two independent harnesses, sharing one repo, coordinating through one threshold — with almost no change to either:
+The mechanism is the same for any resource:
+
+1. **acquire** a lease over a region under an intent (`read` / `write` / `propose`) — or learn it conflicts with a lease someone already holds
+2. **write** within the lease — Limen checks the target lies inside the region, applies the change, and records a witness (bytes, content hash, time, agent)
+3. **release** — the region frees for the next holder
+
+Conflicts are decided by region overlap: `write × write` and `write × read` conflict, `read × read` is fine, and `propose` never conflicts. Every lease carries a TTL and auto-expires, so a crashed agent can't deadlock the namespace.
+
+**Example — two coding harnesses on one repo** (the filesystem resource):
 
 ```
-   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-   │ Claude Code │    │   Cursor    │    │  Codex CLI  │
-   │  + subagents│    │             │    │             │
-   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+   │   Agent A    │   │   Agent B    │   │   Agent C    │
+   │ (Claude Code)│   │   (Cursor)   │   │   (Codex)    │
+   └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
           │ MCP (stdio)      │ MCP              │ MCP
           ▼                  ▼                  ▼
    ╔══════════════════════════════════════════════════╗
@@ -54,15 +63,15 @@ Two independent harnesses, sharing one repo, coordinating through one threshold 
    ╠══════════════════════════════════════════════════╣
    ║   arbitration (lease conflicts) · witness (audit) ║
    ╠══════════════════════════════════════════════════╣
-   ║   SQLite (.limen/state.db)  —  leases + writes    ║
+   ║   resource: filesystem     ·     SQLite state.db  ║
    ╚══════════════════════════════════════════════════╝
 ```
 
-1. Claude Code wants `src/auth/` → `limen_acquire("src/auth/", "write", "claude-code:sess-A")` → gets lease **L1** (TTL 5 min).
-2. Codex wants `src/auth/login.rs` → `limen_acquire(...)` → Limen sees L1 covers that path → returns **conflict** ("held by claude-code:sess-A"). Codex moves to non-conflicting `src/parser/`, or waits.
-3. Claude Code writes via `limen_write(L1, "src/auth/login.rs", …)` → Limen checks the path is in scope, writes the file, and records a witness (content hash, time, agent).
-4. Claude Code calls `limen_release(L1)` → `src/auth/` unlocks; Codex can take it.
-5. Any time, `limen audit` shows every write: path, bytes, hash, which agent, which lease.
+1. Agent A wants `src/auth/` → `limen_acquire("src/auth/", "write", "claude-code:sess-A")` → lease **L1** (TTL 5 min).
+2. Agent C wants `src/auth/login.rs` → **conflict** (held by A). It moves to `src/parser/`, or waits.
+3. A writes via `limen_write(L1, "src/auth/login.rs", …)` → in region, applied, witnessed.
+4. A calls `limen_release(L1)` → the region frees; C can take it.
+5. `limen audit` shows every change: region, bytes, hash, which agent, which lease.
 
 ---
 
@@ -75,7 +84,7 @@ cargo install --path crates/limen        # or: cargo build -p limen --release
 cd your-project && limen init            # create .limen/ and print the MCP config
 ```
 
-`limen init` prints a ready-to-paste config. Point any MCP-speaking harness at it — for **Claude Code** (`settings.json`):
+`limen init` prints a ready-to-paste config. Point any MCP-speaking host at it — for example, **Claude Code** (`settings.json`):
 
 ```json
 {
@@ -88,47 +97,48 @@ cd your-project && limen init            # create .limen/ and print the MCP conf
 }
 ```
 
-That's it — Claude Code, Cursor, Codex, and others can now call three tools:
+That's it — Claude Code, Cursor, Codex, and any other MCP host can now call three tools (parameters shown for the filesystem resource):
 
 | Tool | Inputs | Returns |
 | --- | --- | --- |
-| `limen_acquire` | `path_pattern`, `intent` (`read`\|`write`\|`propose`), `agent_label`, `ttl_ms?` | `lease_id`, `expires_at` — or a conflict |
-| `limen_write` | `lease_id`, `path`, `content` | `content_hash`, `bytes_written` |
+| `limen_acquire` | `path_pattern` (region), `intent` (`read`\|`write`\|`propose`), `agent_label`, `ttl_ms?` | `lease_id`, `expires_at` — or a conflict |
+| `limen_write` | `lease_id`, `path` (target), `content` | `content_hash`, `bytes_written` |
 | `limen_release` | `lease_id` | `released: bool` |
 
 Inspect what happened at any time:
 
 ```bash
-limen audit --db .limen/state.db          # active leases + recent witnessed writes
-limen attribute src/auth/login.rs         # who changed this path, when, under which lease
+limen audit --db .limen/state.db          # active leases + recent witnessed changes
+limen attribute src/auth/login.rs         # who changed this, when, under which lease
 ```
 
 ---
 
 ## Concepts
 
-Limen has exactly five first-class concepts, each backed by a real type in the code — no invented vocabulary. Full definitions in [`docs/spec/glossary.md`](docs/spec/glossary.md).
+Limen has a small, general vocabulary — each term backed by a real type in the code, no invented words. Full definitions in [`docs/spec/glossary.md`](docs/spec/glossary.md).
 
-| Concept | Meaning | Today |
+| Concept | Meaning | Filesystem resource (today) |
 | --- | --- | --- |
+| **namespace** | the addressable space of mutable resources being coordinated | the workspace's files |
+| **region** (a *limen*) | a slice of the namespace a lease covers | a path or directory prefix (`src/auth/`) |
 | **identity** | who is requesting | plaintext agent label (`claude-code:sess-A`); ed25519 planned |
-| **boundary** (a *limen*) | a region of the namespace | literal path or directory prefix (`src/auth/`) |
-| **lease** | time-bounded authority over a boundary | intent + TTL (5 min) + state |
+| **lease** | time-bounded authority over a region | intent + TTL (5 min) + state |
 | **intent** | what the holder means to do | `read` / `write` / `propose` |
-| **witness** | recorded evidence of a write | path, bytes, SHA-256, time, agent |
+| **witness** | recorded evidence of a mediated change | target, bytes, SHA-256, time, agent |
 
-**Conflict rule** (overlapping boundaries): `write × write` conflicts · `write × read` conflicts (reader yields) · `read × read` is fine · `propose` never conflicts.
+**Conflict rule** (overlapping regions): `write × write` conflicts · `write × read` conflicts (reader yields) · `read × read` is fine · `propose` never conflicts.
 
 ---
 
 ## Scope: what Limen is — and is not
 
-Limen's predecessor died of conceptual sprawl; staying small is the whole point. Details in [`docs/spec/boundaries.md`](docs/spec/boundaries.md).
+Limen's predecessor died of conceptual sprawl; staying small is the whole point. The concept is general, but the surface stays one sharp primitive. Details in [`docs/spec/boundaries.md`](docs/spec/boundaries.md).
 
 | | |
 | --- | --- |
-| ✅ **is** | an advisory lease manager + write mediator + witness, over MCP; harness-neutral; value scales with how many harnesses run at once |
-| 🚫 **is not (yet)** | mandatory enforcement (it's advisory — it issues and witnesses, it doesn't intercept); a resident cluster service; multi-machine; cryptographic identity |
+| ✅ **is** | an advisory lease manager + change mediator + witness, over MCP; agent-neutral and resource-pluggable; value scales with how many agents share the namespace |
+| 🚫 **is not (yet)** | mandatory enforcement (it's advisory — it issues and witnesses, it doesn't intercept); more than one resource backend; multi-machine; cryptographic identity |
 | ⛔ **is not (ever)** | an agent runtime / orchestrator / scheduler; a governance / policy / "law" layer; a model or harness competitor |
 
 It coordinates **shared state**; it does not orchestrate agents. The line: if a feature only makes sense once Limen is *in charge* of an agent, it's out of scope — Limen is never in charge.
@@ -137,15 +147,15 @@ It coordinates **shared state**; it does not orchestrate agents. The line: if a 
 
 ## Why now
 
-- **Harness explosion.** Claude Code, Cursor, Codex, Gemini CLI, Copilot CLI, aider, cline — running 2–3 at once is already normal.
-- **Sub-agent fan-out.** Mainstream harnesses spawn parallel sub-agents (Claude Code's `Agent` tool). A single harness is *already* multi-writer.
-- **Nobody owns this layer.** Harness vendors compete on the IDE experience; Anthropic is articulating the [zero-trust](https://claude.com/blog/zero-trust-for-ai-agents) paradigm. *"Let them coexist peacefully in one workspace"* is empty.
+- **Agents that write are multiplying.** Coding harnesses (Claude Code, Cursor, Codex, Gemini CLI, aider), research and ops agents, computer-use agents — more of them act on shared state every month.
+- **Fan-out is built in.** Mainstream harnesses spawn parallel sub-agents (Claude Code's `Agent` tool). A single host is *already* multi-writer.
+- **Nobody owns this layer.** Vendors compete on the agent loop; Anthropic is articulating the [zero-trust](https://claude.com/blog/zero-trust-for-ai-agents) paradigm. *"Let independent agents share one namespace safely"* is empty.
 
 ---
 
 ## The thesis we intend to prove
 
-Limen makes a claim an experiment can prove wrong — which is what keeps it honest rather than rhetorical:
+Limen makes a claim an experiment can prove wrong — which keeps it honest rather than rhetorical. We test it on the filesystem example (concurrent coding agents on one repo), because that is where the pain is measurable today:
 
 > At a fixed degree of parallelism N, **`Par-N-Limen` Pareto-dominates `Par-N-Naive`** on (wall-clock × pass@1) — no worse on either, strictly better on at least one — while strictly winning on lost-edit-lines, build-break-rate, and attribution.
 
@@ -163,11 +173,11 @@ Metrics: **pass@1** (and the stricter **pass^k** for reliability under repeated 
 
 Limen stands on settled ground, not on LLM-orchestration fashion — because reasoning is volatile and coordination is not.
 
-- **Concurrency control & leases:** Gray & Cheriton, *Leases* (SOSP 1989); Burrows, *Chubby* — advisory locking (OSDI 2006); ZooKeeper, etcd, Consul; POSIX `flock`; the lost-update/write-skew taxonomy (Berenson et al., SIGMOD 1995).
-- **Shared-state coordination:** blackboard systems (Hearsay-II), tuple spaces (Linda); the CRDT/OT *merge-after-write* family Limen contrasts with by *preventing before the write*.
+- **Concurrency control & leases:** Gray & Cheriton, *Leases* (SOSP 1989); Burrows, *Chubby* — advisory locking (OSDI 2006); ZooKeeper, etcd, Consul; POSIX `flock`; the lost-update / write-skew taxonomy (Berenson et al., SIGMOD 1995).
+- **Shared-state coordination:** blackboard systems (Hearsay-II), tuple spaces (Linda); the CRDT/OT *merge-after-write* family Limen contrasts with by *preventing before the change*.
 - **Zero trust for AI agents:** Anthropic's [Zero Trust for AI agents](https://claude.com/blog/zero-trust-for-ai-agents), grounded in NIST SP 800-207 and least privilege (Saltzer & Schroeder 1975).
 
-Annotated, verified bibliography: [`docs/references.md`](docs/references.md). Prior art in this exact space exists (notably MCP Agent Mail) — Limen's claim is the *generalized category plus a rigorous experiment*, not "first."
+Annotated, verified bibliography: [`docs/references.md`](docs/references.md). Prior art in this space exists (notably MCP Agent Mail) — Limen's claim is the *generalized model plus a rigorous experiment*, not "first."
 
 ---
 
@@ -178,12 +188,13 @@ Limen is **alpha** and honest about it.
 | Surface | Status |
 | --- | --- |
 | MVP (lease + write + release + audit, stdio MCP) | implemented |
+| resources | one (filesystem); the model is resource-pluggable |
 | enforcement | **advisory only** — agents can bypass; witness still attributes |
 | identity | plaintext label (ed25519 signing planned) |
-| scope | single machine, single workspace |
-| boundary matching | literal path / directory prefix (no globs yet) |
+| scope | single machine, single namespace |
+| region matching | literal path / directory prefix (no globs yet) |
 
-Lineage: AgentGraph → Crawfish → **Limen** (a refactor from an over-reaching "control plane for governed swarms" down to one sharp coordination primitive).
+Lineage: AgentGraph → Crawfish → **Limen** (a refactor from an over-reaching "control plane for governed swarms" down to one general coordination primitive).
 
 ---
 
@@ -194,6 +205,7 @@ Lineage: AgentGraph → Crawfish → **Limen** (a refactor from an over-reaching
 - [`docs/spec/boundaries.md`](docs/spec/boundaries.md) — what Limen is and is not ([中文](docs/spec/boundaries.zh.md))
 - [`docs/spec/glossary.md`](docs/spec/glossary.md) — canonical vocabulary ([中文](docs/spec/glossary.zh.md))
 - [`docs/spec/related-work.md`](docs/spec/related-work.md) — related work & experimental framing
+- [`docs/experiments.md`](docs/experiments.md) — hero experiment design
 - [`docs/references.md`](docs/references.md) — annotated bibliography
 
 Contribution and security policy: [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) · [`.github/SECURITY.md`](.github/SECURITY.md).
