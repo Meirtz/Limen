@@ -104,6 +104,7 @@ That's it — Claude Code, Cursor, Codex, and any other MCP host can now call th
 | `limen_acquire` | `path_pattern` (region), `intent` (`read`\|`write`\|`propose`), `agent_label`, `ttl_ms?` | `lease_id`, `expires_at` — or a conflict |
 | `limen_write` | `lease_id`, `path` (target), `content` | `content_hash`, `bytes_written` |
 | `limen_release` | `lease_id` | `released: bool` |
+| `limen_renew` | `lease_id`, `ttl_ms?` | `expires_at` (extended) |
 
 Inspect what happened at any time:
 

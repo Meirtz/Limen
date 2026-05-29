@@ -276,6 +276,39 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Extend an active lease's TTL (a keepalive). Errors if the lease is missing,
+    /// not active, or already expired — a holder must still hold a live lease to renew.
+    pub async fn renew_lease(&self, lease_id: &str, ttl_ms: i64) -> Result<Lease, StoreError> {
+        let lease = self
+            .get_lease(lease_id)
+            .await?
+            .ok_or_else(|| StoreError::LeaseNotFound(lease_id.to_string()))?;
+        if lease.state != LeaseState::Active {
+            return Err(StoreError::LeaseInactive {
+                id: lease.id,
+                state: lease.state,
+            });
+        }
+        let now = now_millis();
+        if lease.expires_at < now {
+            return Err(StoreError::LeaseExpired {
+                id: lease.id,
+                expires_at: lease.expires_at,
+                now,
+            });
+        }
+        let expires_at = now + ttl_ms;
+        sqlx::query("UPDATE leases SET expires_at = ?1 WHERE id = ?2 AND state = 'active'")
+            .bind(expires_at)
+            .bind(lease_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(Lease {
+            expires_at,
+            ..lease
+        })
+    }
+
     pub async fn get_lease(&self, lease_id: &str) -> Result<Option<Lease>, StoreError> {
         let row = sqlx::query(
             "SELECT id, path_pattern, intent, agent_label, acquired_at, expires_at, released_at, state \
@@ -583,6 +616,37 @@ mod tests {
             .acquire_lease("src/auth/", Intent::Write, "agent-B", DEFAULT_LEASE_TTL_MS)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn renew_extends_lease_ttl() {
+        let store = Store::open_in_memory().await.unwrap();
+        let lease = store
+            .acquire_lease("src/", Intent::Write, "agent-A", 1000)
+            .await
+            .unwrap();
+        let renewed = store
+            .renew_lease(&lease.id, DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        assert!(renewed.expires_at > lease.expires_at);
+        let got = store.get_lease(&lease.id).await.unwrap().unwrap();
+        assert_eq!(got.expires_at, renewed.expires_at);
+    }
+
+    #[tokio::test]
+    async fn renew_released_lease_rejected() {
+        let store = Store::open_in_memory().await.unwrap();
+        let lease = store
+            .acquire_lease("src/", Intent::Write, "agent-A", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        store.release_lease(&lease.id).await.unwrap();
+        let err = store
+            .renew_lease(&lease.id, DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::LeaseInactive { .. }));
     }
 
     #[tokio::test]

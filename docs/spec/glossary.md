@@ -59,6 +59,7 @@ Limen is exposed as an MCP server (stdio JSON-RPC 2.0) with exactly three tools.
 | `limen_acquire` | Acquire a lease on a region under an intent | `lease_id`, `expires_at` — or a conflict error |
 | `limen_write` | Apply a mediated change to a target within a held lease | `content_hash`, `bytes_written` |
 | `limen_release` | Release a held lease | `released: bool` |
+| `limen_renew` | Extend the TTL of a held lease (keepalive) | `expires_at` |
 
 ## Deliberately retired terms (NOT Limen vocabulary)
 

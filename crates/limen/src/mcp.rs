@@ -209,6 +209,21 @@ fn tools_list_response() -> Value {
                     },
                     "required": ["lease_id"]
                 }
+            },
+            {
+                "name": "limen_renew",
+                "description": "Extend the TTL of a held lease before it expires (a keepalive). Returns the new expiry.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "lease_id": { "type": "string" },
+                        "ttl_ms": {
+                            "type": "integer",
+                            "description": "New lifetime in milliseconds from now. Defaults to 300000 (5 min)."
+                        }
+                    },
+                    "required": ["lease_id"]
+                }
             }
         ]
     })
@@ -229,6 +244,7 @@ async fn handle_tool_call(store: &Store, params: &Value) -> Result<Value, JsonRp
         "limen_acquire" => tool_acquire(store, &call.arguments).await,
         "limen_write" => tool_write(store, &call.arguments).await,
         "limen_release" => tool_release(store, &call.arguments).await,
+        "limen_renew" => tool_renew(store, &call.arguments).await,
         other => {
             return Err(JsonRpcError::invalid_params(format!(
                 "unknown tool: {other}"
@@ -327,6 +343,26 @@ async fn tool_release(store: &Store, args: &Value) -> Result<Value, String> {
     }
 }
 
+#[derive(Deserialize)]
+struct RenewArgs {
+    lease_id: String,
+    #[serde(default)]
+    ttl_ms: Option<i64>,
+}
+
+async fn tool_renew(store: &Store, args: &Value) -> Result<Value, String> {
+    let a: RenewArgs =
+        serde_json::from_value(args.clone()).map_err(|e| format!("invalid arguments: {e}"))?;
+    let ttl = a.ttl_ms.unwrap_or(DEFAULT_LEASE_TTL_MS);
+    match store.renew_lease(&a.lease_id, ttl).await {
+        Ok(lease) => Ok(json!({
+            "lease_id": lease.id,
+            "expires_at": lease.expires_at,
+        })),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +405,7 @@ mod tests {
         assert!(names.contains(&"limen_acquire"));
         assert!(names.contains(&"limen_write"));
         assert!(names.contains(&"limen_release"));
+        assert!(names.contains(&"limen_renew"));
     }
 
     #[tokio::test]
@@ -419,6 +456,42 @@ mod tests {
             release_resp["result"]["structuredContent"]["released"],
             true
         );
+    }
+
+    #[tokio::test]
+    async fn renew_round_trip() {
+        let store = fresh().await;
+        let acquire_req = req_str(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "limen_acquire",
+                "arguments": {
+                    "path_pattern": "src/",
+                    "intent": "write",
+                    "agent_label": "agent-A"
+                }
+            }
+        }));
+        let resp = handle_message(&store, &acquire_req).await.unwrap();
+        let lease_id = resp["result"]["structuredContent"]["lease_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let renew_req = req_str(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "limen_renew",
+                "arguments": { "lease_id": lease_id }
+            }
+        }));
+        let renew_resp = handle_message(&store, &renew_req).await.unwrap();
+        assert_eq!(renew_resp["result"]["isError"], false);
+        assert!(renew_resp["result"]["structuredContent"]["expires_at"].is_i64());
     }
 
     #[tokio::test]

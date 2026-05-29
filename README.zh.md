@@ -104,6 +104,7 @@ cd your-project && limen init            # 创建 .limen/ 并打印下面的 MCP
 | `limen_acquire` | `path_pattern`（区域）、`intent`（`read`\|`write`\|`propose`）、`agent_label`、`ttl_ms?` | `lease_id`、`expires_at`——或 conflict |
 | `limen_write` | `lease_id`、`path`（目标）、`content` | `content_hash`、`bytes_written` |
 | `limen_release` | `lease_id` | `released: bool` |
+| `limen_renew` | `lease_id`、`ttl_ms?` | `expires_at`（已延长） |
 
 随时查看发生了什么：
 
