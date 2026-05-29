@@ -1,13 +1,15 @@
 # Limen — Hero Experiment Design
 
-> **Status: design, not results.** This is the executable experiment plan behind the
-> quantitative thesis. The harness and the runs are future work (roadmap v0.4); this
-> document fixes the design so the claim is concrete, falsifiable, and reviewable.
+> **Status: apparatus implemented; the full study is future work.** The measurement harness lives
+> in [`crates/limen-bench`](../crates/limen-bench): the experimental arms, a coordination-independent
+> oracle, the coupling-class task family, and `pilot` / `sweep` / `analyze` subcommands. What remains
+> is the *pre-registered, contamination-controlled study at scale* — this document fixes that design
+> so the claim stays concrete, falsifiable, and reviewable.
 > Companions: [`spec/related-work.md`](spec/related-work.md) (related work + framing),
 > [`PRD.md`](PRD.md) §10.2 (product-level summary), [`spec/philosophy.md`](spec/philosophy.md) (Principle 7).
 >
-> **Numeric discipline:** every measured quantity below is a `[TBD — measure]`. Do not
-> import figures from related work as if they were ours; cite them only to motivate design.
+> **Numeric discipline:** every measured quantity below is a `[TBD — measure]`. No headline numbers
+> are quoted here; do not import figures from related work as if they were ours.
 
 ## 1. The claim under test
 
@@ -41,6 +43,24 @@ safety–time tradeoff. Rejecting H0 on the primary cell is the result.
 
 Task, model, temperature, N, and the agent harness are held constant across arms. The
 **only** difference between the two `Par-N` arms is whether writes go through a lease.
+
+### 2.1 As implemented in `limen-bench`
+
+The harness implements four arms over a pilot task, each matched on I/O path so the only
+difference is the coordination policy:
+
+| Implemented arm | Coordination policy |
+| --- | --- |
+| `naive` | stale read, last-writer-wins (no coordination) |
+| `limen-placebo` | witnessed lease but **stale** read — isolates the wrapper from the arbitration |
+| `limen` | witnessed write lease + **fresh** read — composes same-file edits |
+| `limen-deps` | `limen` plus an advisory write×read reconciliation round — also recovers cross-file skew |
+
+Run them with `cargo run -p limen-bench -- pilot <model-id…>` (full grid), `… sweep <model-id…>`
+(coupling-fraction sweep), and `… analyze [results.jsonl]` (per-(task, coordination) pass rate with
+95% Wilson intervals). Endpoints and credentials come from the environment; nothing provider-specific
+is committed. The compute-free mechanism (`arm` + `sim`) and a custom-resource integration test run
+without any model.
 
 ## 3. Benchmark: a Concurrent-Refactor Suite
 
