@@ -8,6 +8,16 @@ mod store;
 
 use store::Store;
 
+/// Ready-to-paste MCP server config (Claude Code `settings.json` shape).
+const MCP_CONFIG_SNIPPET: &str = r#"  {
+    "mcpServers": {
+      "limen": {
+        "command": "limen",
+        "args": ["serve", "--db", ".limen/state.db"]
+      }
+    }
+  }"#;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "limen",
@@ -40,6 +50,12 @@ enum Command {
         path: String,
         #[arg(long, default_value = ".limen/state.db")]
         db: PathBuf,
+    },
+    /// Create the `.limen/` state directory and print MCP setup for your harnesses.
+    Init {
+        /// Workspace directory to initialize (defaults to the current directory).
+        #[arg(default_value = ".")]
+        dir: PathBuf,
     },
 }
 
@@ -110,6 +126,30 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            Ok(())
+        }
+        Command::Init { dir } => {
+            let limen_dir = dir.join(".limen");
+            std::fs::create_dir_all(&limen_dir)
+                .with_context(|| format!("creating {}", limen_dir.display()))?;
+            println!("Initialized Limen state directory: {}", limen_dir.display());
+            println!();
+            println!("Next steps:");
+            println!(
+                "  1. Install the daemon so `limen` is on PATH:  cargo install --path crates/limen"
+            );
+            println!("  2. Point each MCP-speaking harness at it. Claude Code (settings.json):");
+            println!();
+            println!("{MCP_CONFIG_SNIPPET}");
+            println!();
+            println!(
+                "     Cursor, Codex, and other MCP hosts use the same command in their own config format."
+            );
+            println!("  3. Add `.limen/` to your .gitignore so coordination state stays local.");
+            println!();
+            println!(
+                "Your agents can then call limen_acquire / limen_write / limen_release. Inspect with `limen audit`."
+            );
             Ok(())
         }
     }

@@ -9,7 +9,10 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
 - `limen`: a workspace coordination daemon, exposed as an MCP server, that issues
   advisory, boundary-scoped, time-bounded **write leases** and records a
   **witnessed** audit trail so concurrent AI agents stop overwriting each other.
-  - CLI: `limen serve` (stdio MCP server), `limen audit` (active leases + recent writes)
+  - CLI: `limen serve` (stdio MCP server), `limen audit` (active leases + recent writes),
+    `limen attribute <path>` (per-agent attribution for a path), `limen init` (create
+    `.limen/` and print ready-to-paste MCP config for Claude Code / Cursor / Codex)
+  - end-to-end smoke test that drives the real binary through the full MCP lifecycle over stdio
   - MCP tools: `limen_acquire`, `limen_write`, `limen_release`
   - SQLite-backed leases and write audit; typed conflict matrix
     (`write × write` and `write × read` conflict; `read × read` and `propose` do not)

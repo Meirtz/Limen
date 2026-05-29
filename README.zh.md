@@ -68,13 +68,14 @@ Limen 是一个单一的小 Rust 守护进程，以 [MCP](https://modelcontextpr
 
 ## 快速开始
 
-Limen 处于 alpha，从源码构建：
+Limen 处于 alpha，从源码构建，然后初始化工作区：
 
 ```bash
-cargo install --path crates/limen     # 或：cargo build -p limen --release
+cargo install --path crates/limen        # 或：cargo build -p limen --release
+cd your-project && limen init            # 创建 .limen/ 并打印下面的 MCP 配置
 ```
 
-把任何支持 MCP 的 harness 指向它。以 **Claude Code**（`settings.json`）为例：
+`limen init` 会打印可直接粘贴的配置。把任何支持 MCP 的 harness 指向它——以 **Claude Code**（`settings.json`）为例：
 
 ```json
 {

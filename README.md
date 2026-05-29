@@ -68,13 +68,14 @@ Two independent harnesses, sharing one repo, coordinating through one threshold 
 
 ## Quickstart
 
-Limen is alpha; build it from source:
+Limen is alpha; build it from source, then initialize your workspace:
 
 ```bash
-cargo install --path crates/limen     # or: cargo build -p limen --release
+cargo install --path crates/limen        # or: cargo build -p limen --release
+cd your-project && limen init            # create .limen/ and print the MCP config
 ```
 
-Point any MCP-speaking harness at it. For **Claude Code** (`settings.json`):
+`limen init` prints a ready-to-paste config. Point any MCP-speaking harness at it — for **Claude Code** (`settings.json`):
 
 ```json
 {
