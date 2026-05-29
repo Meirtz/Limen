@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod mcp;
+mod resource;
 mod store;
 
 use store::Store;

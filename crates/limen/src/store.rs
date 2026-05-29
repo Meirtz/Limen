@@ -1,15 +1,20 @@
-//! SQLite persistence for Limen: leases and writes.
+//! Coordination core: leases, conflict arbitration, and the witness audit.
 //!
-//! Schema is two tables. `leases` tracks who holds what for how long.
-//! `writes` is the audit log of mediated mutations. Both keyed by UUID.
+//! This layer is **resource-agnostic** — it coordinates *regions of a namespace*
+//! and records a witness for every mediated change, delegating "do these regions
+//! overlap / is this target in-region / apply the change" to a [`Resource`]
+//! (see [`crate::resource`]). The filesystem is the one resource shipped today.
+//!
+//! Schema is two tables. `leases` tracks who holds which region for how long.
+//! `writes` is the witnessed audit of mediated changes. Both keyed by UUID.
 
+use crate::resource::{Applied, FilesystemResource, Resource};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow};
 use sqlx::{Row, SqlitePool};
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -40,6 +45,15 @@ impl Intent {
             other => Err(StoreError::InvalidIntent(other.to_string())),
         }
     }
+}
+
+/// The conflict matrix, in one place: two intents over overlapping regions conflict
+/// unless either is `propose` (purely advisory) or both are `read`.
+pub fn conflicts(a: Intent, b: Intent) -> bool {
+    !matches!(
+        (a, b),
+        (Intent::Propose, _) | (_, Intent::Propose) | (Intent::Read, Intent::Read)
+    )
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,8 +111,11 @@ pub enum StoreError {
     #[error("lease {id} intent is {intent:?}, not write")]
     NotAWriteLease { id: String, intent: Intent },
 
-    #[error("path '{path}' not within lease pattern '{pattern}'")]
+    #[error("target '{path}' not within lease region '{pattern}'")]
     PathOutOfScope { path: String, pattern: String },
+
+    #[error("invalid region '{0}'")]
+    InvalidRegion(String),
 
     #[error("invalid intent '{0}' (expected read|write|propose)")]
     InvalidIntent(String),
@@ -113,12 +130,21 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
 }
 
+/// The coordination store. Holds the lease/witness tables and a [`Resource`] that
+/// gives the coordinated namespace meaning.
 pub struct Store {
     pool: SqlitePool,
+    resource: Box<dyn Resource>,
 }
 
 impl Store {
+    /// Open a store backed by the default resource (the filesystem).
     pub async fn open(db_path: &Path) -> anyhow::Result<Self> {
+        Self::open_with(db_path, Box::new(FilesystemResource)).await
+    }
+
+    /// Open a store over an explicit resource.
+    pub async fn open_with(db_path: &Path, resource: Box<dyn Resource>) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
                 tokio::fs::create_dir_all(parent)
@@ -129,17 +155,23 @@ impl Store {
         let opts = SqliteConnectOptions::new()
             .filename(db_path)
             .create_if_missing(true)
+            .busy_timeout(Duration::from_secs(5))
             .journal_mode(SqliteJournalMode::Wal);
         let pool = SqlitePool::connect_with(opts)
             .await
             .with_context(|| format!("opening db {}", db_path.display()))?;
-        let store = Self { pool };
+        let store = Self { pool, resource };
         store.init_schema().await?;
         Ok(store)
     }
 
     #[cfg(test)]
     pub async fn open_in_memory() -> anyhow::Result<Self> {
+        Self::open_in_memory_with(Box::new(FilesystemResource)).await
+    }
+
+    #[cfg(test)]
+    pub async fn open_in_memory_with(resource: Box<dyn Resource>) -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::new()
             .filename(":memory:")
             .create_if_missing(true);
@@ -147,7 +179,7 @@ impl Store {
             .max_connections(1)
             .connect_with(opts)
             .await?;
-        let store = Self { pool };
+        let store = Self { pool, resource };
         store.init_schema().await?;
         Ok(store)
     }
@@ -167,6 +199,8 @@ impl Store {
         agent_label: &str,
         ttl_ms: i64,
     ) -> Result<Lease, StoreError> {
+        self.resource.validate_region(path_pattern)?;
+
         let now = now_millis();
         let expires_at = now + ttl_ms;
 
@@ -187,21 +221,19 @@ impl Store {
 
         for row in rows {
             let other_pattern: String = row.try_get("path_pattern")?;
+            if !self.resource.regions_overlap(path_pattern, &other_pattern) {
+                continue;
+            }
             let other_intent_s: String = row.try_get("intent")?;
-            if !patterns_overlap(path_pattern, &other_pattern) {
-                continue;
+            let other_intent = Intent::parse(&other_intent_s)
+                .map_err(|_| StoreError::Corrupt(format!("unknown intent: {other_intent_s}")))?;
+            if conflicts(intent, other_intent) {
+                return Err(StoreError::Conflict {
+                    existing_id: row.try_get("id")?,
+                    existing_agent: row.try_get("agent_label")?,
+                    existing_pattern: other_pattern,
+                });
             }
-            let other_is_write = other_intent_s == "write";
-            let new_is_write = intent == Intent::Write;
-            // Propose never conflicts; two reads never conflict.
-            if intent == Intent::Propose || (!new_is_write && !other_is_write) {
-                continue;
-            }
-            return Err(StoreError::Conflict {
-                existing_id: row.try_get("id")?,
-                existing_agent: row.try_get("agent_label")?,
-                existing_pattern: other_pattern,
-            });
         }
 
         let id = Uuid::new_v4().to_string();
@@ -258,12 +290,12 @@ impl Store {
         }
     }
 
-    /// Validate that the given lease permits writing to `path`, then write the file
-    /// and record the audit entry.
+    /// Validate that `lease` permits writing to `target`, apply the change through
+    /// the resource, then record the witness.
     pub async fn record_write(
         &self,
         lease_id: &str,
-        path: &str,
+        target: &str,
         content: &[u8],
     ) -> Result<WriteRecord, StoreError> {
         let lease = self
@@ -290,31 +322,28 @@ impl Store {
                 intent: lease.intent,
             });
         }
-        if !path_in_pattern(path, &lease.path_pattern) {
+        if !self.resource.region_contains(&lease.path_pattern, target) {
             return Err(StoreError::PathOutOfScope {
-                path: path.to_string(),
+                path: target.to_string(),
                 pattern: lease.path_pattern,
             });
         }
 
-        if let Some(parent) = Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-        }
-        tokio::fs::write(path, content).await?;
+        let Applied {
+            bytes,
+            content_hash,
+        } = self.resource.apply(target, content)?;
 
         let id = Uuid::new_v4().to_string();
-        let hash = hex_sha256(content);
         sqlx::query(
             "INSERT INTO writes (id, lease_id, path, bytes_written, content_hash, written_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(&id)
         .bind(lease_id)
-        .bind(path)
-        .bind(content.len() as i64)
-        .bind(&hash)
+        .bind(target)
+        .bind(bytes)
+        .bind(&content_hash)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -322,9 +351,9 @@ impl Store {
         Ok(WriteRecord {
             id,
             lease_id: lease_id.to_string(),
-            path: path.to_string(),
-            bytes_written: content.len() as i64,
-            content_hash: hash,
+            path: target.to_string(),
+            bytes_written: bytes,
+            content_hash,
             written_at: now,
         })
     }
@@ -352,17 +381,17 @@ impl Store {
         rows.iter().map(row_to_write).collect()
     }
 
-    /// Returns (write_record, agent_label) for every write recorded against `path`,
-    /// most recent first.
+    /// Returns (write_record, agent_label) for every change recorded against
+    /// `target`, most recent first.
     pub async fn attribute_path(
         &self,
-        path: &str,
+        target: &str,
     ) -> Result<Vec<(WriteRecord, String)>, StoreError> {
         let rows = sqlx::query(
             "SELECT w.id, w.lease_id, w.path, w.bytes_written, w.content_hash, w.written_at, l.agent_label \
              FROM writes w JOIN leases l ON w.lease_id = l.id WHERE w.path = ?1 ORDER BY w.written_at DESC",
         )
-        .bind(path)
+        .bind(target)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
@@ -378,12 +407,8 @@ impl Store {
 fn row_to_lease(row: &SqliteRow) -> Result<Lease, StoreError> {
     let intent_s: String = row.try_get("intent")?;
     let state_s: String = row.try_get("state")?;
-    let intent = match intent_s.as_str() {
-        "read" => Intent::Read,
-        "write" => Intent::Write,
-        "propose" => Intent::Propose,
-        other => return Err(StoreError::Corrupt(format!("unknown intent: {other}"))),
-    };
+    let intent = Intent::parse(&intent_s)
+        .map_err(|_| StoreError::Corrupt(format!("unknown intent: {intent_s}")))?;
     let state = match state_s.as_str() {
         "active" => LeaseState::Active,
         "released" => LeaseState::Released,
@@ -413,40 +438,15 @@ fn row_to_write(row: &SqliteRow) -> Result<WriteRecord, StoreError> {
     })
 }
 
+/// Milliseconds since the UNIX epoch. Clamps to 0 if the wall clock is somehow set
+/// before the epoch, warning rather than silently misbehaving.
 pub fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-fn hex_sha256(content: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content);
-    format!("{:x}", hasher.finalize())
-}
-
-/// Two patterns overlap when one is a prefix of the other (treating trailing `/`
-/// as a directory marker). MVP scope: literal paths or directory prefixes only — no globs.
-pub fn patterns_overlap(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    if a.ends_with('/') && b.starts_with(a) {
-        return true;
-    }
-    if b.ends_with('/') && a.starts_with(b) {
-        return true;
-    }
-    false
-}
-
-/// Whether a write to `path` falls within `pattern`.
-pub fn path_in_pattern(path: &str, pattern: &str) -> bool {
-    if pattern.ends_with('/') {
-        path.starts_with(pattern)
-    } else {
-        path == pattern
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as i64,
+        Err(_) => {
+            tracing::warn!("system clock is before UNIX_EPOCH; treating now as 0");
+            0
+        }
     }
 }
 
@@ -477,6 +477,19 @@ const SCHEMA_STATEMENTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflict_matrix() {
+        use Intent::*;
+        assert!(conflicts(Write, Write));
+        assert!(conflicts(Write, Read));
+        assert!(conflicts(Read, Write));
+        assert!(!conflicts(Read, Read));
+        // propose never conflicts, as acquirer or as incumbent
+        assert!(!conflicts(Propose, Write));
+        assert!(!conflicts(Write, Propose));
+        assert!(!conflicts(Propose, Propose));
+    }
 
     #[tokio::test]
     async fn acquire_and_release_write_lease() {
@@ -546,7 +559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn propose_never_conflicts() {
+    async fn propose_never_conflicts_as_acquirer() {
         let store = Store::open_in_memory().await.unwrap();
         store
             .acquire_lease("src/", Intent::Write, "agent-A", DEFAULT_LEASE_TTL_MS)
@@ -556,6 +569,30 @@ mod tests {
             .acquire_lease("src/", Intent::Propose, "agent-B", DEFAULT_LEASE_TTL_MS)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn propose_incumbent_does_not_block_write() {
+        // Regression: an existing propose lease must not block a later write.
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .acquire_lease("src/", Intent::Propose, "agent-A", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        store
+            .acquire_lease("src/auth/", Intent::Write, "agent-B", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_region_rejected() {
+        let store = Store::open_in_memory().await.unwrap();
+        let err = store
+            .acquire_lease("", Intent::Write, "agent-A", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::InvalidRegion(_)));
     }
 
     #[tokio::test]
@@ -574,6 +611,29 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, StoreError::PathOutOfScope { .. }));
+    }
+
+    #[tokio::test]
+    async fn write_parent_dir_traversal_rejected() {
+        // Regression: a `..` target lexically under the region must not escape it.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = Store::open(&db).await.unwrap();
+        let pattern = format!("{}/scope/", tmp.path().display());
+        let lease = store
+            .acquire_lease(&pattern, Intent::Write, "agent-A", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        let escape = format!("{}/scope/../escaped.txt", tmp.path().display());
+        let err = store
+            .record_write(&lease.id, &escape, b"nope")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::PathOutOfScope { .. }));
+        assert!(
+            !tmp.path().join("escaped.txt").exists(),
+            "the escaping write must not have landed on disk"
+        );
     }
 
     #[tokio::test]
@@ -599,22 +659,5 @@ mod tests {
         let attrib = store.attribute_path(&good_path).await.unwrap();
         assert_eq!(attrib.len(), 1);
         assert_eq!(attrib[0].1, "agent-A");
-    }
-
-    #[test]
-    fn patterns_overlap_basic() {
-        assert!(patterns_overlap("src/", "src/auth/login.rs"));
-        assert!(patterns_overlap("src/auth/", "src/"));
-        assert!(patterns_overlap("a.rs", "a.rs"));
-        assert!(!patterns_overlap("a.rs", "b.rs"));
-        assert!(!patterns_overlap("src/auth/", "src/other/"));
-    }
-
-    #[test]
-    fn path_in_pattern_basic() {
-        assert!(path_in_pattern("src/auth/login.rs", "src/auth/"));
-        assert!(!path_in_pattern("src/auth/login.rs", "src/other/"));
-        assert!(path_in_pattern("a.rs", "a.rs"));
-        assert!(!path_in_pattern("a.rs", "b.rs"));
     }
 }
