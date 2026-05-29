@@ -45,20 +45,29 @@ pub struct FilesystemResource;
 
 impl Resource for FilesystemResource {
     fn regions_overlap(&self, a: &str, b: &str) -> bool {
-        patterns_overlap(a, b)
+        // Normalize first so differently-spelled descriptors of the same directory
+        // (e.g. `src/` vs `./src/`) are compared as one region. A `..` makes a
+        // descriptor unnormalizable, so it never overlaps anything.
+        match (normalize(a), normalize(b)) {
+            (Some(a), Some(b)) => patterns_overlap(&a, &b),
+            _ => false,
+        }
     }
 
     fn region_contains(&self, region: &str, target: &str) -> bool {
-        // A `..` component would let a lexically in-region target escape once the OS
-        // resolves the path, so such a target is never considered contained.
-        !has_parent_dir(target) && path_in_pattern(target, region)
+        // `..` is unnormalizable, so a traversal target is never contained — it
+        // could otherwise escape the region once the OS resolves the path.
+        match (normalize(region), normalize(target)) {
+            (Some(region), Some(target)) => path_in_pattern(&target, &region),
+            _ => false,
+        }
     }
 
     fn validate_region(&self, region: &str) -> Result<(), StoreError> {
-        if region.is_empty() || region == "/" || has_parent_dir(region) {
-            return Err(StoreError::InvalidRegion(region.to_string()));
+        match normalize(region) {
+            Some(n) if !n.is_empty() && n != "/" => Ok(()),
+            _ => Err(StoreError::InvalidRegion(region.to_string())),
         }
-        Ok(())
     }
 
     fn apply(&self, target: &str, content: &[u8]) -> Result<Applied, StoreError> {
@@ -88,6 +97,32 @@ fn has_parent_dir(s: &str) -> bool {
     Path::new(s)
         .components()
         .any(|c| matches!(c, Component::ParentDir))
+}
+
+/// Lexically normalize a filesystem descriptor so differently-spelled descriptors
+/// of the same path compare equal: drop `.` and empty components (collapsing `./`
+/// and `//`), preserve a leading `/` and the trailing-`/` directory marker, and
+/// reject any `..` component as unnormalizable (returning `None`). Purely lexical —
+/// it never touches the disk, so it does not resolve symlinks.
+fn normalize(s: &str) -> Option<String> {
+    let is_abs = s.starts_with('/');
+    let is_dir = s.ends_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in s.split('/') {
+        match comp {
+            "" | "." => continue,
+            ".." => return None,
+            other => parts.push(other),
+        }
+    }
+    let mut out = parts.join("/");
+    if is_abs {
+        out.insert(0, '/');
+    }
+    if is_dir && !out.is_empty() && !out.ends_with('/') {
+        out.push('/');
+    }
+    Some(out)
 }
 
 /// Two patterns overlap when one is a prefix of the other (a trailing `/` marks a
@@ -148,6 +183,15 @@ mod tests {
         assert!(fs.region_contains("src/auth/", "src/auth/login.rs"));
         assert!(!fs.region_contains("src/auth/", "src/auth/../../etc/passwd"));
         assert!(!fs.region_contains("src/auth/", "src/other/x.rs"));
+    }
+
+    #[test]
+    fn aliased_descriptors_overlap_and_contain() {
+        let fs = FilesystemResource;
+        assert!(fs.regions_overlap("src/", "./src/"));
+        assert!(fs.regions_overlap("src/", "src//auth/"));
+        assert!(fs.region_contains("./src/", "src/auth/login.rs"));
+        assert!(fs.region_contains("src/", "./src/auth/login.rs"));
     }
 
     #[test]

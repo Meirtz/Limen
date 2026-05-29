@@ -560,6 +560,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn aliased_write_leases_conflict() {
+        // Regression: differently-spelled descriptors of the same directory must
+        // be recognized as the same region.
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .acquire_lease("src/", Intent::Write, "agent-A", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        let err = store
+            .acquire_lease("./src/", Intent::Write, "agent-B", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Conflict { .. }));
+    }
+
+    #[tokio::test]
     async fn read_read_no_conflict() {
         let store = Store::open_in_memory().await.unwrap();
         store
