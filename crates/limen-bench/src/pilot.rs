@@ -430,6 +430,14 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_mixed_coupling_and_empty_sweep() {
+        let t = mixed_coupling(0, 0);
+        assert_eq!(t.n(), 0);
+        assert_eq!(t.coupling_fraction(), 0.0);
+        assert_eq!(sweep_plan(0), vec![(0, 0)]);
+    }
+
+    #[test]
     fn sweep_plan_raises_coupling_monotonically() {
         let plan = sweep_plan(3);
         assert_eq!(plan, vec![(3, 0), (2, 1), (1, 2), (0, 3)]);
