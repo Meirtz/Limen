@@ -156,9 +156,133 @@ pub fn hex_sha256(content: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[cfg(feature = "redis")]
+pub use redis_kv::RedisKvResource;
+
+/// A Redis-backed key-value [`Resource`] (enable with `--features redis`).
+///
+/// Regions are key prefixes (a trailing `/` marks a prefix) or exact keys — the same prefix
+/// semantics as the filesystem, via [`patterns_overlap`] / [`path_in_pattern`]. A mediated change
+/// `SET`s the key. This lets Limen coordinate concurrent agents over a shared Redis namespace —
+/// e.g. a shared agent-memory / scratchpad store — with the same leases and witness as files.
+/// Reads (`get`) are the agent's own concern; writes flow through Limen.
+///
+/// Uses the synchronous client, consistent with the trait's "one request at a time" design.
+#[cfg(feature = "redis")]
+mod redis_kv {
+    use super::{hex_sha256, path_in_pattern, patterns_overlap, Applied, Resource};
+    use crate::store::StoreError;
+
+    pub struct RedisKvResource {
+        client: redis::Client,
+    }
+
+    impl RedisKvResource {
+        /// Connect to Redis at `url`, e.g. `redis://127.0.0.1/`.
+        pub fn connect(url: &str) -> Result<Self, StoreError> {
+            let client = redis::Client::open(url)
+                .map_err(|e| StoreError::Resource(format!("redis open {url}: {e}")))?;
+            Ok(Self { client })
+        }
+
+        fn conn(&self) -> Result<redis::Connection, StoreError> {
+            self.client
+                .get_connection()
+                .map_err(|e| StoreError::Resource(format!("redis connect: {e}")))
+        }
+
+        /// Current value at `key`, if any. Agents read before writing through Limen.
+        pub fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
+            let mut con = self.conn()?;
+            redis::cmd("GET")
+                .arg(key)
+                .query::<Option<String>>(&mut con)
+                .map_err(|e| StoreError::Resource(format!("redis get {key}: {e}")))
+        }
+    }
+
+    impl Resource for RedisKvResource {
+        fn regions_overlap(&self, a: &str, b: &str) -> bool {
+            patterns_overlap(a, b)
+        }
+        fn region_contains(&self, region: &str, target: &str) -> bool {
+            path_in_pattern(target, region)
+        }
+        fn validate_region(&self, region: &str) -> Result<(), StoreError> {
+            if region.is_empty() {
+                Err(StoreError::InvalidRegion(region.to_string()))
+            } else {
+                Ok(())
+            }
+        }
+        fn apply(&self, target: &str, content: &[u8]) -> Result<Applied, StoreError> {
+            let value = String::from_utf8_lossy(content).to_string();
+            let mut con = self.conn()?;
+            redis::cmd("SET")
+                .arg(target)
+                .arg(&value)
+                .query::<()>(&mut con)
+                .map_err(|e| StoreError::Resource(format!("redis set {target}: {e}")))?;
+            Ok(Applied {
+                bytes: content.len() as i64,
+                content_hash: hex_sha256(content),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Live check: needs a running Redis. Run with:
+    //   REDIS_URL=redis://127.0.0.1/ cargo test -p limen --features redis -- --ignored redis
+    #[cfg(feature = "redis")]
+    #[tokio::test]
+    #[ignore = "live Redis: set REDIS_URL (e.g. redis://127.0.0.1/)"]
+    async fn store_coordinates_a_redis_kv_resource() {
+        use crate::store::{Intent, Store, DEFAULT_LEASE_TTL_MS};
+        let url = std::env::var("REDIS_URL").expect("set REDIS_URL");
+        let reader = RedisKvResource::connect(&url).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open_with(
+            &tmp.path().join("state.db"),
+            Box::new(RedisKvResource::connect(&url).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let key = "limen:test:config/app";
+        // Two agents compose onto one Redis key under write leases, each reading current first.
+        for (agent, addition) in [("agent-A", "feature_a"), ("agent-B", "feature_b")] {
+            let lease = store
+                .acquire_lease(
+                    "limen:test:config/",
+                    Intent::Write,
+                    agent,
+                    DEFAULT_LEASE_TTL_MS,
+                )
+                .await
+                .unwrap();
+            let current = reader.get(key).unwrap().unwrap_or_default();
+            let next = if current.is_empty() {
+                addition.to_string()
+            } else {
+                format!("{current}\n{addition}")
+            };
+            store
+                .record_write(&lease.id, key, next.as_bytes())
+                .await
+                .unwrap();
+            store.release_lease(&lease.id).await.unwrap();
+        }
+
+        let final_value = reader.get(key).unwrap().unwrap();
+        assert!(
+            final_value.contains("feature_a") && final_value.contains("feature_b"),
+            "coordination over Redis should compose both contributions: {final_value:?}"
+        );
+    }
 
     #[test]
     fn patterns_overlap_basic() {
