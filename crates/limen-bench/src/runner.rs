@@ -76,6 +76,15 @@ impl PilotAgent<'_> {
         }
     }
 
+    /// Sampling settings recorded for provenance: `(temperature, max_tokens)`. The reference
+    /// agent does no sampling, so both are zero.
+    pub fn sampling(&self) -> (f32, u32) {
+        match self {
+            PilotAgent::Reference => (0.0, 0),
+            PilotAgent::Model { params, .. } => (params.temperature, params.max_tokens),
+        }
+    }
+
     fn model_agent(&self, label: &str) -> Option<ModelAgent<'_>> {
         match self {
             PilotAgent::Reference => None,
@@ -142,6 +151,10 @@ pub struct PilotRun {
     pub model: String,
     pub n: usize,
     pub seed: u64,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    /// Content hash of the task (seed repo + subtasks + test command) — pins exactly what was run.
+    pub task_hash: String,
     pub passed: bool,
     pub exit_code: Option<i32>,
     pub stderr_tail: String,
@@ -152,6 +165,30 @@ fn labels(n: usize) -> Vec<String> {
     (0..n)
         .map(|i| format!("agent-{}", (b'A' + i as u8) as char))
         .collect()
+}
+
+/// A content hash of the task — seed repo, each subtask's region/prompt/reads, and the test
+/// command — so a run record pins exactly which task instance produced it.
+fn task_hash(task: &PilotTask) -> String {
+    let mut s = String::new();
+    s.push_str(&task.id);
+    s.push('\n');
+    for (p, c) in &task.initial {
+        s.push_str(p);
+        s.push('\u{0}');
+        s.push_str(c);
+        s.push('\n');
+    }
+    for sub in &task.subtasks {
+        s.push_str(&sub.region);
+        s.push('\u{0}');
+        s.push_str(&sub.prompt);
+        s.push('\u{0}');
+        s.push_str(&sub.reads.join(","));
+        s.push('\n');
+    }
+    s.push_str(&task.test_cmd.join(" "));
+    limen::resource::hex_sha256(s.as_bytes())
 }
 
 /// Indices of subtasks that read a file in `changed` which is *not* their own write region —
@@ -263,6 +300,7 @@ pub async fn run_pilot(
         files.insert(rel.clone(), read_file(rel));
     }
 
+    let (temperature, max_tokens) = agent.sampling();
     Ok(PilotRun {
         task_id: task.id.clone(),
         coupling: format!("{:?}", task.coupling),
@@ -270,6 +308,9 @@ pub async fn run_pilot(
         model: agent.model_name(),
         n: task.n(),
         seed,
+        temperature,
+        max_tokens,
+        task_hash: task_hash(task),
         passed: outcome.passed,
         exit_code: outcome.exit_code,
         stderr_tail: tail(&outcome.stderr, 400),
@@ -446,6 +487,9 @@ mod tests {
             model: "reference".into(),
             n: 2,
             seed: 1,
+            temperature: 0.0,
+            max_tokens: 0,
+            task_hash: "deadbeef".into(),
             passed: true,
             exit_code: Some(0),
             stderr_tail: String::new(),
