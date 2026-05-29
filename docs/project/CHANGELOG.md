@@ -40,6 +40,12 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   `pilot` / `sweep` / `analyze` subcommands over any OpenAI-compatible endpoint (endpoint
   and credentials read from the environment — never committed).
 - `#![forbid(unsafe_code)]` across the workspace.
+- **second shipped `Resource`: a Redis-backed KV store** (`RedisKvResource`, behind the optional
+  `redis` feature — the core stays dependency-lean by default). Regions are key prefixes; a mediated
+  change `SET`s the key. Lets Limen coordinate concurrent agents over a shared Redis namespace (e.g.
+  shared agent memory) with the same leases + witness as the filesystem — the first non-filesystem
+  backend, proving the resource-agnostic core in shipped code. Region logic is unit-tested; the live
+  round-trip is an `#[ignore]`d test behind `REDIS_URL`.
 
 ### Process
 

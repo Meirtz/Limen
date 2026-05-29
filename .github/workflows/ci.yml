@@ -44,3 +44,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # Optional resource backends are feature-gated and off by default; compile, lint, and
+      # unit-test them too. Their live integration tests are #[ignore]d (need a real service).
+      - name: Lint (redis feature)
+        run: cargo clippy -p limen --all-targets --features redis -- -D warnings
+      - name: Test (redis feature)
+        run: cargo test -p limen --features redis

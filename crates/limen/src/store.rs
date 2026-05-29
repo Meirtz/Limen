@@ -135,6 +135,9 @@ pub enum StoreError {
     #[error("corrupt row: {0}")]
     Corrupt(String),
 
+    #[error("resource error: {0}")]
+    Resource(String),
+
     #[error(transparent)]
     Db(#[from] sqlx::Error),
 
