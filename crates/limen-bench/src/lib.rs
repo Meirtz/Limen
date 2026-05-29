@@ -15,6 +15,7 @@
 
 pub mod arm;
 pub mod kv;
+pub mod model;
 pub mod oracle;
 pub mod record;
 pub mod sim;

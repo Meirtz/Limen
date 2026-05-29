@@ -9,6 +9,10 @@ use limen_bench::sim::{simulate, SimParams};
 use limen_bench::task;
 
 fn main() -> anyhow::Result<()> {
+    // `limen-bench models` discovers the exact inference-hub model ids (needs a key).
+    if std::env::args().nth(1).as_deref() == Some("models") {
+        return list_models();
+    }
     println!("# Interference simulation (synthetic, deterministic — NOT measured LLM results)\n");
     println!(
         "{:>3} {:>5} {:>12} {:>14} {:>12} {:>11}",
@@ -47,4 +51,22 @@ fn main() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// `limen-bench models` — list available inference-hub model ids (needs `INFERENCE_HUB_API_KEY`),
+/// so we can pin the exact `nvdev/...` strings for Kimi / GLM / DeepSeek / MiMo before a run.
+fn list_models() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = limen_bench::model::ModelClient::from_env()?;
+        let mut models = client.list_models().await?;
+        models.sort();
+        println!("{} models available on the inference hub:", models.len());
+        for m in &models {
+            println!("  {m}");
+        }
+        anyhow::Ok(())
+    })
 }
