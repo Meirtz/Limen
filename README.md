@@ -167,7 +167,7 @@ It coordinates **shared state**; it does not orchestrate agents. The line: if a 
 
 Limen makes a claim an experiment can prove wrong — which keeps it honest rather than rhetorical. We test it on the filesystem example (concurrent coding agents on one repo), because that is where the pain is measurable today:
 
-> At a fixed degree of parallelism N, **`Par-N-Limen` Pareto-dominates `Par-N-Naive`** on (wall-clock × pass@1) — no worse on either, strictly better on at least one — while strictly winning on lost-edit-lines, build-break-rate, and attribution.
+> Coordination's value is **conditional on task coupling**, and reliability is where uncoordinated concurrency fails first. As writers (N) and coupling rise, naive concurrency's **pass^k** (all of k repeated runs succeed) collapses super-linearly through lost edits and broken builds; advisory coordination recovers most of that cost **below a coupling threshold τ** (a Pareto-improvement — added safety at ~no time cost), while **above τ** the safety gain persists but the wall-clock advantage inverts.
 
 | Arm | Setup |
 | --- | --- |

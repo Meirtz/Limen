@@ -11,20 +11,24 @@
 
 ## 1. The claim under test
 
-> **At a fixed degree of parallelism N, `Par-N-Limen` Pareto-dominates `Par-N-Naive`** on
-> the pair (wall-clock, pass@1) — no worse on either axis, strictly better on at least one —
-> while strictly winning on lost-edit-lines, build-break-rate, and attribution-accuracy.
+> Coordination's value is **conditional on task coupling**, and **reliability** (not single-shot
+> success) is where uncoordinated concurrency fails first. As writers (N) and coupling rise,
+> naive concurrency's **pass^k** (all of k repeated runs succeed) collapses super-linearly through
+> lost edits and broken builds; advisory coordination recovers most of that cost **below a coupling
+> threshold τ** (a Pareto-improvement — added safety at ~no time cost), while **above τ** the safety
+> gain persists but the wall-clock advantage inverts.
 
-It is deliberately a **Pareto-dominance claim at fixed N**, not "more agents = better."
-The multi-agent scaling literature shows parallelism has diminishing or negative returns
-past a strong single-agent baseline, so a monotone "parallelism helps" claim would be
-unsupportable. The contribution is that an advisory coordination layer *moves the
-coordination-cost curve* so that, at a given N, you keep parallel speedup without paying
-the lost-update / build-break tax.
+It is deliberately a **conditional, coupling-dependent** claim, not "more agents = better." The
+multi-agent scaling literature shows parallelism has diminishing or negative returns past a strong
+single-agent baseline, and the nearest empirical anchor (CodeCRDT) finds coordination helps on some
+tasks and hurts on others — exactly the two sides of τ this claim predicts. The contribution is that
+an advisory coordination layer *moves the coordination-cost curve*, and that the crossover τ is
+measurable and predictable from task structure.
 
-**Null hypothesis (H0):** Par-N-Limen does not Pareto-dominate Par-N-Naive — i.e. any
-pass@1 gain costs wall-clock (or vice versa), and coordination-sensitive metrics do not
-differ beyond noise. Rejecting H0 on the pre-registered primary cell is the result.
+**Primary endpoint:** **pass^k** (reliability across k repeated concurrent runs) on the
+pre-registered primary cell. **Null hypothesis (H0):** advisory coordination does not improve pass^k
+on coupled strata, and there is no measurable coupling threshold separating Pareto-improvement from a
+safety–time tradeoff. Rejecting H0 on the primary cell is the result.
 
 ## 2. Arms (single-factor ablation)
 
@@ -79,13 +83,14 @@ Report separately; do not pool with CRS.
 | **pass@1** | fraction of single trials whose final tree passes the hidden suite | run suite on final tree | pass@k, Chen et al. 2021 (unbiased estimator) |
 | **pass^k** | probability that **all** k repeated trials of a cell pass | repeat the full cell k times; estimate P(all pass) | reliability framing (pass^k) |
 | **wall-clock** | end-to-end time from dispatch to final tree | wall timer around the trial; report median + IQR | — |
-| **lost-edit-lines** | lines one agent wrote that a later write overwrote/discarded before the final state | Limen arm: from the witness log (per-write hashes + sequence); Naive arm: from a **record-only** shadow witness (see §6) | Lost Update / P4 |
+| **lost-edit-lines** | lines one agent wrote that a later write overwrote/discarded before the final state | a **coordination-independent external oracle** (replay each agent's edit stream against the final tree) — the *same* instrument for every arm, so the ruler never differs across arms | Lost Update / P4 |
 | **build-break-rate** | fraction of trials whose final tree fails to build/compile | run build before tests | Write Skew / interface breakage |
-| **attribution-accuracy** | fraction of final-state hunks correctly attributed to the responsible agent | Limen: join hunk → witness → agent; Naive: `git blame` (collapses to the human) | assume-breach → audit |
+| **attribution-accuracy** | fraction of final-state hunks correctly attributed to the responsible agent | scored against an **independent ground-truth attribution map** (the witness gives ground-truth-at-source; `git blame` collapses to the human) — both judged by the same gold | assume-breach → audit |
 
-`pass@1` and `wall-clock` are the **primary pair** (the Pareto axes). The other three are
-the mechanism metrics that explain *why* (they should move sharply in Limen's favor on the
-coupled strata and barely at all on `disjoint`).
+**`pass^k` is the primary endpoint** (reliability across repeated concurrent runs); `wall-clock`
+(normalized per 1000 output chars) is the cost axis; `pass@1` is secondary. lost-edit-lines,
+build-break-rate, and attribution are the mechanism metrics that explain *why* — they should move
+sharply in Limen's favor on the coupled strata and barely at all on `disjoint`.
 
 ## 6. Harness and instrumentation (avoiding bias)
 
@@ -93,9 +98,11 @@ coupled strata and barely at all on `disjoint`).
   agent's writes can be routed through `limen_write` uniformly. Closed harnesses (Cursor,
   Codex) are reported only in a separate, clearly-labeled ecological run.
 - **Identical instrumentation across `Par-N` arms.** Par-N-Naive runs the same write-wrapper
-  as Par-N-Limen but in **record-only** mode: it records the would-be witness (for
-  lost-edit-lines / attribution measurement) **without** acquiring or enforcing a lease. This
-  keeps the *only* difference between the arms the conflict arbitration, not the I/O path.
+  as Par-N-Limen but in **record-only** mode — no lease acquired or enforced — so the *only*
+  difference between the arms is conflict arbitration, not the I/O path. Metrics (lost-edit-lines,
+  attribution) are computed by a **coordination-independent external oracle**, not the wrapper, so
+  the measurement ruler is identical across arms; a **placebo arm** (wrapper installed, arbitration
+  disabled) isolates the wrapper's effect from arbitration.
 - **Adherence is a measured quantity, not an assumption.** Limen is advisory; an agent that
   bypasses it would defeat prevention. Either (a) instrument the harness so all writes go
   through `limen_write`, and/or (b) report a per-trial adherence rate and treat low-adherence
@@ -104,10 +111,12 @@ coupled strata and barely at all on `disjoint`).
 
 ## 7. Statistical design
 
-- **Pre-registration.** The single confirmatory comparison is **Par-N-Limen vs Par-N-Naive at
-  N = 3 on the `shared-region` stratum**, primary outcome = Pareto-dominance on
-  (wall-clock, pass@1). Everything else (other N, other strata, secondary benchmark, the
-  three mechanism metrics) is **secondary/exploratory** and labeled as such.
+- **Pre-registration (OSF, locked before any runs).** The single confirmatory comparison is
+  **Par-N-Limen vs Par-N-Naive at N = 3 on the `shared-region` stratum**; primary endpoint =
+  **pass^k superiority**, with a non-inferiority (TOST) test on wall-clock to establish the
+  Pareto-improvement regime, plus a pre-specified test for the coupling threshold τ. Everything else
+  (other N, other strata, secondary benchmark, the mechanism metrics) is **secondary/exploratory**
+  and labeled as such.
 - **Repetitions.** R ≥ 20 trials per cell for pass@1 confidence intervals; pass^k needs many
   repeats of the *cell* to estimate "all-k-succeed" — power that separately and do not
   over-read underpowered pass^k cells.
@@ -120,13 +129,18 @@ coupled strata and barely at all on `disjoint`).
 
 ## 8. Analysis and figures
 
-- **Headline figure — the Pareto plot.** Each arm is a point (or bootstrap cloud) in
-  (wall-clock ↓, pass@1 ↑) space. The claim is visible iff Par-N-Limen sits up-and-left of
-  Par-N-Naive (dominating), with Seq-1 as the reference. One figure should tell the story.
+- **Headline figure — the reliability–cost frontier across coupling.** Plot each arm in
+  (wall-clock ↓, **pass^k** ↑) space, one panel per coupling stratum (with a sweep over N). The
+  story is the frontier *shifting*: below τ, Par-N-Limen sits up-and-left of Par-N-Naive
+  (Pareto-improvement); above τ it sits up-and-right (more reliable, slower) — the crossover τ is
+  the result. Seq-1 and Par-N-Worktree are the references.
+- **Threshold figure.** (Δpass^k, Δwall-clock) vs continuous coupling p, per N — locating τ(N) and
+  showing it decreases with N.
 - **Mechanism panel.** Grouped bars with CIs for lost-edit-lines, build-break-rate, and
-  attribution-accuracy, faceted by coupling stratum — showing the advantage appears on
+  attribution-accuracy, faceted by coupling stratum — the advantage appears on
   `shared-region`/`interface` and vanishes on `disjoint` (the honest fairness check).
-- **Scaling panel.** Each metric vs N, to show where coordination stops paying off.
+- **Model-fit panel.** Measured interference vs the predicted `N²·p·e` curve, and recovered-cost
+  fraction vs adherence α — model vs a coupling-independent null.
 
 ## 9. Reproducibility
 

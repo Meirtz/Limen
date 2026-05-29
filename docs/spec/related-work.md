@@ -80,7 +80,7 @@ The **lost-update / write-skew taxonomy** (Berenson et al., *A Critique of ANSI 
 | **Par-N-Limen** | N concurrent agents on one shared tree, coordinated by the Limen MCP server | the treatment |
 | *(optional)* **Par-N-Peer** | N concurrent agents behind the nearest near-peer (e.g. MCP Agent Mail) | head-to-head against existing prior art |
 
-A clean single-factor ablation: Seq-1 vs Par-N isolates the cost/benefit of parallelism; Par-N-Naive vs Par-N-Limen isolates the effect of the coordination layer with task, model, and N held constant. The thesis is **Pareto-dominance at fixed N**, not "more agents win" — the scaling literature shows parallelism has diminishing/negative returns past a strong single-agent baseline, so a monotone claim would be unsupportable.
+A clean single-factor ablation: Seq-1 vs Par-N isolates the cost/benefit of parallelism; Par-N-Naive vs Par-N-Limen isolates the effect of the coordination layer with task, model, and N held constant. The thesis is **conditional on task coupling**, not "more agents win": below a coupling threshold τ coordination Pareto-improves (added safety at ~no time cost), above it the safety gain persists while the wall-clock advantage inverts — consistent with the scaling literature (diminishing/negative returns past a strong single-agent baseline), and matching CodeCRDT's mixed speedup/slowdown rather than asserting a monotone win.
 
 ### 3.2 Metrics
 

@@ -13,7 +13,7 @@ English is canonical; each public spec has a `*.zh.md` Chinese companion.
 | [`spec/boundaries.md`](spec/boundaries.md) · [zh](spec/boundaries.zh.md) | What Limen is and is not; the boundary lines |
 | [`spec/glossary.md`](spec/glossary.md) · [zh](spec/glossary.zh.md) | Canonical vocabulary (every term maps to a real type in `crates/limen/`) |
 | [`spec/related-work.md`](spec/related-work.md) | Related work + experimental-framing scaffold for the eventual paper |
-| [`experiments.md`](experiments.md) | Hero experiment design — the executable quantitative thesis (Pareto-dominance) |
+| [`experiments.md`](experiments.md) | Hero experiment design — the executable quantitative thesis (conditional coordination law) |
 | [`references.md`](references.md) | Annotated, verified bibliography (the lineage index) |
 
 ## Source of truth
