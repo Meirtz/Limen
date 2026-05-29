@@ -173,9 +173,11 @@ Limen makes a claim an experiment can prove wrong — which keeps it honest rath
 | --- | --- |
 | **Seq-1** | one agent, sequential — correctness ceiling / latency baseline |
 | **Par-N-Naive** | N concurrent agents, no coordination |
-| **Par-N-Limen** | N concurrent agents behind advisory leases |
+| **Par-N-Placebo** | N agents behind the witnessed wrapper but **without** arbitration — isolates the wrapper from the coordination |
+| **Par-N-Limen** | N concurrent agents behind advisory region leases |
+| **Par-N-Limen+Deps** | adds an advisory write×read round, recovering cross-file coupling that region leases alone cannot |
 
-Metrics: **pass@1** (and the stricter **pass^k** for reliability under repeated concurrent runs), **wall-clock**, **lost-edit-lines**, **build-break-rate**, **attribution-accuracy**. Full executable design: [`docs/experiments.md`](docs/experiments.md); related work & framing: [`docs/spec/related-work.md`](docs/spec/related-work.md). *(This is the evaluation plan, not measured results.)*
+Metrics: **pass@1** (and the stricter **pass^k** for reliability under repeated concurrent runs), **wall-clock**, **lost-edit-lines**, **build-break-rate**, **attribution-accuracy**. The apparatus is implemented in [`crates/limen-bench`](crates/limen-bench) (the arms, a coordination-independent oracle, a coupling-class task family, and `pilot` / `sweep` / `analyze` subcommands); the full executable design is in [`docs/experiments.md`](docs/experiments.md), related work & framing in [`docs/spec/related-work.md`](docs/spec/related-work.md). *(The pre-registered study at scale is future work; no headline numbers are claimed here.)*
 
 ---
 
@@ -203,6 +205,7 @@ Limen is **alpha** and honest about it.
 | identity | plaintext by default; opt-in **ed25519** signed identity (`limen register` / `limen sign`) |
 | scope | single machine, single namespace |
 | region matching | literal path / directory prefix (no globs yet) |
+| experiment apparatus | [`crates/limen-bench`](crates/limen-bench) — arms, coordination-independent oracle, coupling-class tasks, `pilot`/`sweep`/`analyze` |
 
 Lineage: AgentGraph → Crawfish → **Limen** (a refactor from an over-reaching "control plane for governed swarms" down to one general coordination primitive).
 
