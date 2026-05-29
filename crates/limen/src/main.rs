@@ -29,6 +29,14 @@ struct Cli {
     command: Command,
 }
 
+/// Which resource the daemon coordinates. The filesystem is the default; `redis` requires
+/// building with `--features redis` and `--redis-url`.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ResourceKind {
+    Filesystem,
+    Redis,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Run the Limen MCP server over stdio (the integration surface for Claude Code, Cursor, Codex).
@@ -36,6 +44,12 @@ enum Command {
         /// Path to the state database.
         #[arg(long, default_value = ".limen/state.db")]
         db: PathBuf,
+        /// The resource to coordinate (filesystem by default).
+        #[arg(long, default_value = "filesystem")]
+        resource: ResourceKind,
+        /// Redis URL when `--resource redis`, e.g. `redis://127.0.0.1/` (needs `--features redis`).
+        #[arg(long)]
+        redis_url: Option<String>,
     },
     /// Print active leases and recent writes from the audit log.
     Audit {
@@ -90,9 +104,13 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve { db } => {
-            tracing::info!(db = %db.display(), "limen serve starting on stdio");
-            let store = Arc::new(Store::open(&db).await.context("opening store")?);
+        Command::Serve {
+            db,
+            resource,
+            redis_url,
+        } => {
+            tracing::info!(db = %db.display(), ?resource, "limen serve starting on stdio");
+            let store = Arc::new(open_serve_store(&db, resource, redis_url.as_deref()).await?);
             mcp::run_stdio(store).await?;
             tracing::info!("limen serve exiting");
             Ok(())
@@ -201,6 +219,35 @@ async fn main() -> Result<()> {
             let message = identity::acquire_message(&path_pattern, intent, &label);
             println!("{}", identity::sign(private_hex.trim(), &message)?);
             Ok(())
+        }
+    }
+}
+
+/// Open the store for `serve` over the selected resource. Filesystem is always available; Redis
+/// requires building with `--features redis` and a `--redis-url`.
+async fn open_serve_store(
+    db: &Path,
+    resource: ResourceKind,
+    redis_url: Option<&str>,
+) -> Result<Store> {
+    match resource {
+        ResourceKind::Filesystem => Store::open(db).await.context("opening store"),
+        ResourceKind::Redis => {
+            #[cfg(feature = "redis")]
+            {
+                let url = redis_url
+                    .context("--resource redis requires --redis-url (e.g. redis://127.0.0.1/)")?;
+                let res = limen::resource::RedisKvResource::connect(url)
+                    .with_context(|| format!("connecting to redis at {url}"))?;
+                Store::open_with(db, Box::new(res))
+                    .await
+                    .context("opening store over redis")
+            }
+            #[cfg(not(feature = "redis"))]
+            {
+                let _ = redis_url;
+                anyhow::bail!("--resource redis requires building limen with --features redis")
+            }
         }
     }
 }

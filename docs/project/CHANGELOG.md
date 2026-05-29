@@ -45,7 +45,9 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   change `SET`s the key. Lets Limen coordinate concurrent agents over a shared Redis namespace (e.g.
   shared agent memory) with the same leases + witness as the filesystem — the first non-filesystem
   backend, proving the resource-agnostic core in shipped code. Region logic is unit-tested; the live
-  round-trip is an `#[ignore]`d test behind `REDIS_URL`.
+  round-trip is an `#[ignore]`d test behind `REDIS_URL`. `limen serve --resource redis --redis-url
+  redis://…` runs the daemon over Redis (clear error if the binary was built without `--features
+  redis`); the filesystem remains the default.
 
 ### Process
 
