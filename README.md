@@ -155,7 +155,7 @@ Limen makes a claim an experiment can prove wrong — which is what keeps it hon
 | **Par-N-Naive** | N concurrent agents, no coordination |
 | **Par-N-Limen** | N concurrent agents behind advisory leases |
 
-Metrics: **pass@1** (and the stricter **pass^k** for reliability under repeated concurrent runs), **wall-clock**, **lost-edit-lines**, **build-break-rate**, **attribution-accuracy**. Full design, comparables, and threats to validity: [`docs/spec/related-work.md`](docs/spec/related-work.md). *(This is the evaluation plan, not measured results.)*
+Metrics: **pass@1** (and the stricter **pass^k** for reliability under repeated concurrent runs), **wall-clock**, **lost-edit-lines**, **build-break-rate**, **attribution-accuracy**. Full executable design: [`docs/experiments.md`](docs/experiments.md); related work & framing: [`docs/spec/related-work.md`](docs/spec/related-work.md). *(This is the evaluation plan, not measured results.)*
 
 ---
 
