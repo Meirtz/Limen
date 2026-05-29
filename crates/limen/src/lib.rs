@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Limen — the coordination core as a library.
 //!
 //! The daemon binary (`main.rs`) and the benchmark harness (`limen-bench`) share

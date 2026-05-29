@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `limen-bench` — runnable, compute-free apparatus demo.
 //!
 //! Prints (1) a sweep of the interference simulation and (2) the three arms on a

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `limen-bench` — the measurement apparatus for the concurrent-agent interference study.
 //!
 //! Two compute-free instruments, both deterministic and testable without any LLM:
