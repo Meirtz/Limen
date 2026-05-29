@@ -2,7 +2,7 @@
 
 Alpha changelog discipline: user-visible changes are recorded here before merge.
 
-## Unreleased
+## 0.2.0-alpha.1 — 2026-05-30
 
 ### Added
 
@@ -25,8 +25,18 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   filesystem as the one shipped `Resource` (`resource.rs`). Adding another backend
   is a new `Resource`, not a rewrite.
 - `docs/experiments.md`: the executable hero-experiment design (Pareto-dominance thesis).
+- **lease renewal** (`limen_renew` / `Store::renew_lease`): extend a held lease before its
+  TTL expires — a keepalive in the etcd / Consul / Gray-Cheriton lineage.
+- **opt-in ed25519 signed identity** (`limen register` / `limen sign`, `agents` table):
+  a registered agent must sign its `acquire`, verified server-side; the lease is then a
+  bearer capability for the writes that follow. Unregistered labels keep the plaintext
+  advisory path, so the simple workflow is unchanged.
 
 ### Hardened (from an adversarial code review)
+
+- **Region soundness:** filesystem regions are lexically normalized (drop `.`/empty
+  components, reject `..`), so `src/` and `./src/` are recognized as one region and
+  aliased leases now conflict.
 
 - **Security:** mediated writes refuse `..` path traversal, so a write-lease holder
   cannot escape its region (the escape also falsified the audit).
