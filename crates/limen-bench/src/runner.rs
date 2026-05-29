@@ -21,7 +21,7 @@ use crate::exec::{materialize, Executor};
 use crate::model::{CompletionParams, ModelClient};
 use crate::pilot::{PilotSubtask, PilotTask};
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -143,7 +143,7 @@ impl PilotAgent<'_> {
 
 /// One pilot run's record (JSONL-serializable). `files` is the final repo content, kept for
 /// provenance and offline inspection (toy tasks are small).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PilotRun {
     pub task_id: String,
     pub coupling: String,
@@ -151,9 +151,12 @@ pub struct PilotRun {
     pub model: String,
     pub n: usize,
     pub seed: u64,
+    #[serde(default)]
     pub temperature: f32,
+    #[serde(default)]
     pub max_tokens: u32,
     /// Content hash of the task (seed repo + subtasks + test command) — pins exactly what was run.
+    #[serde(default)]
     pub task_hash: String,
     pub passed: bool,
     pub exit_code: Option<i32>,
