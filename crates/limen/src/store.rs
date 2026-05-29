@@ -415,6 +415,20 @@ impl Store {
         rows.iter().map(row_to_lease).collect()
     }
 
+    /// Mark active leases whose TTL has elapsed as expired, returning how many were swept. Audit
+    /// hygiene: callers and the audit view then see only genuinely-held leases, without waiting
+    /// for the next `acquire_lease` to lazily expire them.
+    pub async fn sweep_expired(&self) -> Result<u64, StoreError> {
+        let now = now_millis();
+        let res = sqlx::query(
+            "UPDATE leases SET state = 'expired' WHERE state = 'active' AND expires_at < ?1",
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn list_recent_writes(&self, limit: i64) -> Result<Vec<WriteRecord>, StoreError> {
         let rows = sqlx::query(
             "SELECT id, lease_id, path, bytes_written, content_hash, written_at \
@@ -838,6 +852,22 @@ mod tests {
         assert_eq!(
             got, expected,
             "attribution must be a deterministic total order"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_marks_elapsed_leases() {
+        let store = Store::open_in_memory().await.unwrap();
+        // A lease whose TTL has already elapsed (negative TTL): recorded active, but expired.
+        store
+            .acquire_lease("src/", Intent::Write, "a", -1000)
+            .await
+            .unwrap();
+        assert_eq!(store.sweep_expired().await.unwrap(), 1, "should sweep one");
+        assert_eq!(store.sweep_expired().await.unwrap(), 0, "idempotent");
+        assert!(
+            store.list_active_leases().await.unwrap().is_empty(),
+            "swept lease must not show as active"
         );
     }
 
