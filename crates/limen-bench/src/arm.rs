@@ -84,6 +84,16 @@ impl Arm for ParNaive {
     }
 }
 
+/// When a witnessed, lease-mediated arm reads the file it is about to mutate.
+#[derive(Clone, Copy)]
+enum Read {
+    /// Fresh read at write time — coordination composes contributions (Limen).
+    Fresh,
+    /// Stale read from the initial snapshot — the witness is recorded but the lost update
+    /// is not prevented (placebo).
+    Stale,
+}
+
 /// N agents coordinated by Limen: advisory leases serialize writes to a contended region,
 /// and each write reads the *current* state, so contributions compose. Drives the real
 /// `limen::store::Store` and scores attribution from the witness trail.
@@ -95,20 +105,43 @@ impl Arm for ParLimen {
     }
 
     fn run(&self, task: &Task) -> Result<RunRecord> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(run_limen(task))
+        block_on_store(task, "par-limen", Read::Fresh)
     }
 }
 
-async fn run_limen(task: &Task) -> Result<RunRecord> {
+/// Limen's witnessed mediator **without** coordination: each agent reads the stale initial
+/// snapshot (like naive) yet still records a witness. Isolates the I/O wrapper / witness from
+/// arbitration — it should still lose the edit (only the attribution survives), proving the
+/// win comes from coordination, not merely from routing writes through Limen. (A kill-criterion
+/// guard: if Limen ≈ placebo, the effect is a wrapper artifact, not the mechanism.)
+pub struct ParPlacebo;
+
+impl Arm for ParPlacebo {
+    fn id(&self) -> &'static str {
+        "par-placebo"
+    }
+
+    fn run(&self, task: &Task) -> Result<RunRecord> {
+        block_on_store(task, "par-placebo", Read::Stale)
+    }
+}
+
+fn block_on_store(task: &Task, arm: &str, read: Read) -> Result<RunRecord> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(run_store_arm(task, arm, read))
+}
+
+/// Shared driver for the witnessed, lease-mediated arms (Limen and its placebo). The *only*
+/// difference between them is `read`: fresh (coordinated) vs stale (wrapper-only).
+async fn run_store_arm(task: &Task, arm: &str, read: Read) -> Result<RunRecord> {
     use limen::store::{Intent, Store, DEFAULT_LEASE_TTL_MS};
 
     let work = tempfile::tempdir()?;
     let root = work.path();
+    let initial = initial_tree(task);
 
-    // Materialize the initial tree on disk.
     for (rel, content) in &task.initial {
         let path = root.join(rel);
         if let Some(parent) = path.parent() {
@@ -119,8 +152,6 @@ async fn run_limen(task: &Task) -> Result<RunRecord> {
 
     let store = Store::open(&root.join(".limen/state.db")).await?;
 
-    // Coordinated: acquire a write lease on the target, read current, mutate, write through
-    // the witnessed mediator, release. Honored leases serialize contended writes losslessly.
     for agent in &task.agents {
         for op in &agent.ops {
             let abs = root.join(&op.target);
@@ -128,7 +159,10 @@ async fn run_limen(task: &Task) -> Result<RunRecord> {
             let lease = store
                 .acquire_lease(&abs_s, Intent::Write, &agent.label, DEFAULT_LEASE_TTL_MS)
                 .await?;
-            let current = std::fs::read_to_string(&abs).unwrap_or_default();
+            let current = match read {
+                Read::Fresh => std::fs::read_to_string(&abs).unwrap_or_default(),
+                Read::Stale => initial.get(&op.target).cloned().unwrap_or_default(),
+            };
             let next = op.mutation.apply(&current);
             store
                 .record_write(&lease.id, &abs_s, next.as_bytes())
@@ -137,7 +171,6 @@ async fn run_limen(task: &Task) -> Result<RunRecord> {
         }
     }
 
-    // Read the final tree.
     let mut tree: Tree = Tree::new();
     for (rel, _) in &task.initial {
         let content = std::fs::read_to_string(root.join(rel)).unwrap_or_default();
@@ -155,7 +188,7 @@ async fn run_limen(task: &Task) -> Result<RunRecord> {
         }
     }
 
-    Ok(record("par-limen", task, &tree, attribution))
+    Ok(record(arm, task, &tree, attribution))
 }
 
 #[cfg(test)]
@@ -185,6 +218,23 @@ mod tests {
         assert_eq!(limen.lost_edit_lines, 0, "limen should lose nothing");
         assert!(limen.passed, "limen should pass");
         assert_eq!(limen.attribution_correct, Some(true));
+    }
+
+    #[test]
+    fn placebo_isolates_wrapper_from_arbitration() {
+        // Limen's witnessed mediator WITHOUT coordination (stale reads) still loses the edit —
+        // so the win is the arbitration, not the wrapper — but the attribution still survives.
+        let task = shared_region_merge();
+        let placebo = ParPlacebo.run(&task).unwrap();
+        assert!(
+            placebo.lost_edit_lines >= 1,
+            "placebo should still lose the edit"
+        );
+        assert!(!placebo.passed, "placebo should still fail the merge");
+        assert!(
+            placebo.attribution_correct.is_some(),
+            "placebo keeps witnessed attribution even without prevention"
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //! compute-bound parts and live outside this skeleton (see `docs/experiments.md`).
 
 pub mod arm;
+pub mod kv;
 pub mod oracle;
 pub mod record;
 pub mod sim;

@@ -4,7 +4,7 @@
 //! shared-region merge task. No LLMs, no network — deterministic synthetic numbers that
 //! illustrate the phenomenon and exercise the real coordination code.
 
-use limen_bench::arm::{Arm, ParLimen, ParNaive, Seq1};
+use limen_bench::arm::{Arm, ParLimen, ParNaive, ParPlacebo, Seq1};
 use limen_bench::sim::{simulate, SimParams};
 use limen_bench::task;
 
@@ -33,7 +33,12 @@ fn main() -> anyhow::Result<()> {
 
     println!("\n# Mechanism demo — three arms on a shared-region merge task\n");
     let t = task::shared_region_merge();
-    let arms: Vec<Box<dyn Arm>> = vec![Box::new(Seq1), Box::new(ParNaive), Box::new(ParLimen)];
+    let arms: Vec<Box<dyn Arm>> = vec![
+        Box::new(Seq1),
+        Box::new(ParNaive),
+        Box::new(ParPlacebo),
+        Box::new(ParLimen),
+    ];
     for arm in &arms {
         let r = arm.run(&t)?;
         println!(
