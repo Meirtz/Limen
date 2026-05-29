@@ -31,6 +31,21 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   a registered agent must sign its `acquire`, verified server-side; the lease is then a
   bearer capability for the writes that follow. Unregistered labels keep the plaintext
   advisory path, so the simple workflow is unchanged.
+- `Store::dependents(region)` — active read leases overlapping a region, surfacing the
+  write×read coupling advisorily (it never blocks the write) — and `Store::sweep_expired()`
+  for lease GC. Audit/attribution queries now use a deterministic total order.
+- **measurement apparatus** (`crates/limen-bench`, internal): experimental arms
+  (naive / placebo / Limen / dependency-aware), a coordination-independent oracle, a
+  coupling-class toy-task family, a Monte-Carlo of the interference model, and
+  `pilot` / `sweep` / `analyze` subcommands over any OpenAI-compatible endpoint (endpoint
+  and credentials read from the environment — never committed).
+- `#![forbid(unsafe_code)]` across the workspace.
+
+### Process
+
+- `main` is protected: changes land via pull request, with three required CI checks
+  (`ubuntu-stable`, `ubuntu-msrv`, `macos-stable`) and linear history. See
+  [`.github/CONTRIBUTING.md`](../../.github/CONTRIBUTING.md).
 
 ### Hardened (from an adversarial code review)
 
