@@ -223,6 +223,61 @@ pub fn py_interface_signature_change() -> PilotTask {
     }
 }
 
+/// A shared-region merge of a different shape: two agents add entries to a shared `dict` in one
+/// module (a registry merge, not function append). Naive loses one entry; coordination composes.
+pub fn py_registry_merge() -> PilotTask {
+    PilotTask {
+        id: "py-registry-merge".into(),
+        language: "python".into(),
+        coupling: Coupling::SharedRegion,
+        initial: vec![
+            ("reg/__init__.py".into(), String::new()),
+            ("reg/registry.py".into(), "REGISTRY = {}\n".into()),
+        ],
+        subtasks: vec![
+            PilotSubtask::new(
+                "Append a line `REGISTRY['a'] = 1` after the REGISTRY definition. Keep all existing content.",
+                "reg/registry.py",
+            ),
+            PilotSubtask::new(
+                "Append a line `REGISTRY['b'] = 2` after the REGISTRY definition. Keep all existing content.",
+                "reg/registry.py",
+            ),
+        ],
+        test_cmd: py_test("from reg.registry import REGISTRY; assert REGISTRY == {'a': 1, 'b': 2}; print('ok')"),
+    }
+}
+
+/// An `interface` variant over a module-level **constant**: one agent renames `TIMEOUT`, the
+/// caller still references the old name. Same cross-file write skew, different symbol kind.
+pub fn py_interface_constant_rename() -> PilotTask {
+    PilotTask {
+        id: "py-interface-constant-rename".into(),
+        language: "python".into(),
+        coupling: Coupling::Interface,
+        initial: vec![
+            ("cfg/__init__.py".into(), String::new()),
+            ("cfg/settings.py".into(), "TIMEOUT = 30\n".into()),
+            (
+                "cfg/caller.py".into(),
+                "from cfg.settings import TIMEOUT\n\ndef budget():\n    return TIMEOUT * 2\n".into(),
+            ),
+        ],
+        subtasks: vec![
+            PilotSubtask::new(
+                "Rename the constant `TIMEOUT` to `DEFAULT_TIMEOUT` in this file (keep the value 30).",
+                "cfg/settings.py",
+            ),
+            PilotSubtask::new(
+                "Add a docstring to `budget`. Keep the existing reference as-is.",
+                "cfg/caller.py",
+            )
+            .reading("cfg/settings.py"),
+        ],
+        test_cmd: py_test("from cfg.caller import budget; assert budget() == 60; print('ok')"),
+    }
+}
+
 /// A **mixed-coupling** task: `n_shared` same-file merges plus `n_interface` cross-file
 /// rename/caller pairs, each in its own package, scored by one test that imports everything.
 /// Dialing `n_interface` vs `n_shared` sweeps the fraction of cross-file (write×read) coupling —
@@ -306,6 +361,8 @@ pub fn all() -> Vec<PilotTask> {
         py_interface_break(),
         py_three_way_shared(),
         py_interface_signature_change(),
+        py_registry_merge(),
+        py_interface_constant_rename(),
     ]
 }
 
