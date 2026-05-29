@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in Crawfish runtime, CLI, docs, or examples.
+description: Report a defect in the Limen daemon, CLI, or docs.
 title: "[bug] "
 labels: ["bug"]
 body:

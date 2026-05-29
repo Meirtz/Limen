@@ -1,40 +1,27 @@
 # Documentation
 
-This repository keeps product and architecture documentation under `docs/`.
+Product and design documentation for **Limen** — a workspace coordination daemon for AI agents. Start at the root [`../README.md`](../README.md) ([中文](../README.zh.md)).
 
-## Layout
+## Canonical set
 
-- `docs/spec/`
-  - Canonical Markdown specifications and product documents.
-- `docs/exports/`
-  - Generated exports derived from the Markdown spec set.
-- `docs/archive/`
-  - Historical or legacy materials retained for reference.
-- `docs/experimental/`
-  - Notes and entry points for retained experimental alpha surfaces.
+English is canonical; each public spec has a `*.zh.md` Chinese companion.
 
-## Source Of Truth
+| Doc | What it is |
+| --- | --- |
+| [`PRD.md`](PRD.md) | Product requirements (the product definition of record) |
+| [`spec/philosophy.md`](spec/philosophy.md) · [zh](spec/philosophy.zh.md) | Why Limen's shape is correct — the 7 principles |
+| [`spec/boundaries.md`](spec/boundaries.md) · [zh](spec/boundaries.zh.md) | What Limen is and is not; the boundary lines |
+| [`spec/glossary.md`](spec/glossary.md) · [zh](spec/glossary.zh.md) | Canonical vocabulary (every term maps to a real type in `crates/limen/`) |
+| [`spec/related-work.md`](spec/related-work.md) | Related work + experimental-framing scaffold for the eventual paper |
+| [`references.md`](references.md) | Annotated, verified bibliography (the lineage index) |
 
-The source of truth for product definition and architecture is the Markdown set in `docs/spec/`.
+## Source of truth
 
-Current spec entry points:
+The product definition of record is [`PRD.md`](PRD.md); the design rationale is the `spec/` set above. The implementation is the single crate at [`../crates/limen/`](../crates/limen/) (a Rust MCP server). Limen is **Rust-only** at its core — it is one small daemon, not a multi-crate platform.
 
-- [`spec/philosophy.md`](spec/philosophy.md)
-- [`spec/vision.md`](spec/vision.md)
-- [`spec/architecture.md`](spec/architecture.md)
-- [`spec/v0.1-plan.md`](spec/v0.1-plan.md)
-- [`spec/glossary.md`](spec/glossary.md)
-- [`experimental/README.md`](experimental/README.md)
+## Governance
 
-The implementation boundary is **Rust-first, not Rust-only**:
-
-- the runtime, control plane, storage, and native outbound adapters live in the Cargo workspace
-- isolated edge bridges may live under [`../integrations/`](../integrations/)
-- the current example is the thin OpenClaw inbound bridge at [`../integrations/openclaw-inbound/`](../integrations/openclaw-inbound/)
-
-## Project Governance
-
-Public maintenance and contribution policy lives in:
+Public maintenance and contribution policy:
 
 - [`../.github/CONTRIBUTING.md`](../.github/CONTRIBUTING.md)
 - [`../.github/CODE_OF_CONDUCT.md`](../.github/CODE_OF_CONDUCT.md)
@@ -42,36 +29,12 @@ Public maintenance and contribution policy lives in:
 - [`../.github/SUPPORT.md`](../.github/SUPPORT.md)
 - [`project/CHANGELOG.md`](project/CHANGELOG.md)
 
-## Runnable Example
+## Legacy (pending cleanup)
 
-The public happy path is the **mainline alpha** example under `examples/hero-swarm/`.
+These are retained Crawfish-era materials from before the Limen refactor and are **not** current Limen specs. They are slated for archival or removal:
 
-The live alpha example swarm is tracked under:
+- `spec/vision.md`, `spec/architecture.md`, `spec/v0.1-plan.md` — superseded by `PRD.md` and the `spec/` set above
+- `experimental/` — Crawfish experimental-surface notes (OpenClaw / A2A / federation)
+- `exports/`, `archive/` — generated DOCX exports and historical PRD source
 
-- [`../examples/hero-swarm/Crawfish.toml`](../examples/hero-swarm/Crawfish.toml)
-- [`../examples/hero-swarm/demo.sh`](../examples/hero-swarm/demo.sh)
-- [`../examples/hero-swarm/agents/incident_enricher.toml`](../examples/hero-swarm/agents/incident_enricher.toml)
-- [`../examples/hero-swarm/agents/task_planner.toml`](../examples/hero-swarm/agents/task_planner.toml)
-- [`../examples/hero-swarm/agents/workspace_editor.toml`](../examples/hero-swarm/agents/workspace_editor.toml)
-
-That example is the current implementation reference for a local planning path under `verify_loop`, approval-gated mutation, one supporting workload, and inspectable operator state.
-
-Experimental alpha surfaces are documented separately in:
-
-- [`experimental/README.md`](experimental/README.md)
-
-## Export Policy
-
-The latest consolidated DOCX export is tracked at:
-
-- [`exports/Crawfish-PRD.docx`](exports/Crawfish-PRD.docx)
-
-To regenerate it, run:
-
-```bash
-python3 scripts/export_docset.py
-```
-
-## Archive Policy
-
-Historical materials are retained under `docs/archive/` for provenance and comparison, but they are not editable specs.
+Until they are removed, treat anything using the retired Crawfish vocabulary (control plane, swarm, treaty, federation, doctrine, …; see [`spec/glossary.md`](spec/glossary.md)) as stale.

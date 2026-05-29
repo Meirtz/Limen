@@ -1,301 +1,146 @@
-# Crawfish Philosophy
+# Limen — Philosophy
 
-Canonical terminology is defined in [`glossary.md`](glossary.md).
+> Canonical terminology lives in [`glossary.md`](glossary.md) · Scope and edges live in [`boundaries.md`](boundaries.md) · Sources live in [`../references.md`](../references.md).
+>
+> 中文伴随版：[`philosophy.zh.md`](philosophy.zh.md)。English is canonical.
 
-## Why This Document Exists
+Limen coordinates **concurrent, autonomous agents that mutate shared state**. It issues an advisory, boundary-scoped, time-bounded **lease**, mediates the write and records a **witness** trail (bytes, SHA-256, agent label, timestamp), and ties both to a per-agent **identity** — exposed as an MCP server (`limen_acquire` / `limen_write` / `limen_release`).
 
-Crawfish is not a project that should be designed by looking backward at yesterday's application stack and then asking how to squeeze agents into it.
+That is the **general category**. Its first concrete **beachhead** is multi-harness AI coding over a git repository: heterogeneous coding agents (Claude Code, Cursor, Codex, Gemini CLI) and their parallel sub-agents sharing one working tree, with no layer keeping them from stepping on each other. The coding case is an *instance*, not the definition — the way Git began on Linux kernel source and MCP began on the desktop without *being* those.
 
-The emerging environment is different:
+This document is the intellectual case for that shape. It is deliberately built on **distributed-systems concurrency control** and **zero-trust security**, not on LLM orchestration — because that is the part of the problem that will outlive any model generation.
 
-- harnesses will proliferate faster than standards stabilize
-- reasoning quality will improve, regress, split, and recombine across providers
-- governance and institutions will lag behind capability growth, which is also the broader institutional-lag frame behind Notion's ["Steam, Steel, and Infinite Minds"](https://www.notion.com/blog/steam-steel-and-infinite-minds-ai)
-- same-device and multi-owner agent encounters will become normal before the ecosystem feels ready for them
+---
 
-This document defines the forward-looking philosophy that the rest of the spec set should inherit.
+## The shape of the problem
 
-It also adopts one hard lesson from frontier history: a constitution can define a lawful order without actually producing one. When capability expands faster than institutions, the gap between stated rules and enforceable order becomes a systems problem. Crawfish is designed for that gap.
+The theory of concurrent writers to shared state is settled, and it has precise names. Berenson et al., *A Critique of ANSI SQL Isolation Levels* (SIGMOD 1995), give us two:
 
-The current public support center is still the **mainline alpha** local swarm path. Remote-agent governance, treaty escalation, and federation evidence work remain **experimental alpha** even when implemented, because the project should not confuse forward-looking philosophy with today's default onboarding path.
+- **Lost Update** (`r1[x] … w2[x] … w1[x] … c1`): one writer reads, a second writes, the first overwrites based on its stale read, and the second's committed work vanishes silently.
+- **Write Skew** (`r1[x] … r2[y] … w1[y] … w2[x]`): two writers read overlapping data, write *disjoint* items, and together break an invariant neither broke alone.
 
-## Principle 1: Build For Swarm-Age Governance, Not Single-Agent Demos
+This is exactly what happens when several AI coding agents touch one repository. The same failure modes are now being re-discovered in the agent literature under their own names — *lost updates*, *interface breakage*, *stale partial views* — by Chacon Sartori, *The Specification Gap* (arXiv:2603.24284, 2026), and described from the agent's point of view by Cognition's *Don't Build Multi-Agents* (Yan, 2025): parallel actors "cannot see what the other was doing" and act on "conflicting assumptions not prescribed upfront." That is Lost Update, told from the inside.
 
-The future category is not the single assistant with a convenient shell. It is the governed swarm: many bounded workers, many execution surfaces, many owners, many risk envelopes, and many possible encounter paths.
+The crucial asymmetry is this: **databases and version-control systems earned their safety; agents inherited none of it.** A SQL transaction takes locks or runs under a snapshot and commits atomically. Git serializes through an index and an explicit merge. Agents, by contrast, are:
 
-This is also where Crawfish breaks with much earlier "multi-agent" framing. A large share of earlier multi-agent systems focused on context-managed sub-agents inside one application: LangChain explicitly frames the problem around [context engineering](https://docs.langchain.com/oss/python/langchain/multi-agent), OpenAI's Agents SDK centers [handoffs](https://openai.github.io/openai-agents-python/handoffs/) and shared run [context](https://openai.github.io/openai-agents-python/context/), and AutoGen Swarm describes agents that [share the same message context](https://microsoft.github.io/autogen/0.7.3/user-guide/agentchat-user-guide/swarm.html). Those patterns solve coordination inside one app. Crawfish targets the next problem: real encounters across owners, trust domains, and harness surfaces.
+- **Non-deterministic writers** — the same prompt yields different edits across runs, so collisions are not reproducible and cannot be designed around statically;
+- **Lock-naïve** — they were never written to `acquire` before they write; they open a file and `write()`;
+- **Mutually blind** — independent harnesses launched by different humans or scripts share a working tree with no common parent to merge for them.
 
-That means Crawfish should optimize for:
+So the modern agent stack reconstructed a 1995 hazard while discarding the 1970s–90s cure. **Limen's thesis is that the cure does not need reinventing — it needs porting:** lift lost-update prevention to the coordination layer, where the writers are agents and the shared state is a filesystem nobody locked.
 
-- lifecycle over novelty
-- supervision over vibes
-- contracts over prompt folklore
-- explicit authority over ambient trust
+---
 
-If a design choice only makes a one-agent demo look cleaner but weakens swarm governance, it is the wrong trade.
+## Where Limen stands
 
-## Principle 2: Harnesses Are Replaceable, Control Planes Are Strategic
+Limen takes its primitives from the lineage that already solved coordination, and its security vocabulary from the lineage now adapting to agents.
 
-Harnesses are important, but they are not the strategic center of the system.
+- **Concurrency control & leases.** The lease itself is Gray & Cheriton, *Leases* (SOSP 1989): a time-bounded grant of authority whose holder, on crash or partition, simply lets it *expire* — so failures cost performance, not correctness. The advisory posture is Burrows, *Chubby* (OSDI 2006) and POSIX `flock(2)`. The minimal-kernel, compose-at-the-edge stance is ZooKeeper (Hunt et al., USENIX ATC 2010), which insists it is "*not a lock service*" but a coordination primitive. The modern operational templates are etcd leases (Grant/KeepAlive/Revoke/TTL) and Consul sessions.
+- **Zero trust for AI agents.** The security half is Anthropic's *Zero Trust for AI agents* (2026), grounded in NIST SP 800-207 (2020) and least privilege (Saltzer & Schroeder, 1975). Limen operationalizes three of its four requirements as coordination primitives (see Principle 5).
 
-OpenClaw, Codex, Claude Code, Gemini CLI, ACP-compatible adapters, and future agentic surfaces will come and go, improve, fragment, or be superseded. The enduring system problem is not how to build one more harness. It is how to govern many harnesses as one swarm.
+Standing here — not on prompt-orchestration patterns — is a deliberate bet: **reasoning is volatile; coordination is not.** Models, harnesses, and orchestration fashions churn. The lost-update problem is forty years old and will outlive all of them.
 
-That also means distinguishing harnesses from remote agent planes. A2A's [Agent Card](https://github.com/a2aproject/A2A) model and Google's ["A2A: A New Era of Agent Interoperability"](https://developers.googleblog.com/a2a-a-new-era-of-agent-interoperability/) launch framing matter here: remote delegation is not just another wrapper. It is a separate authority boundary that requires treaty scope and inspectable delegation evidence.
+---
 
-This is why Crawfish treats harnesses as execution surfaces:
+## The principles
 
-- selectable
-- inspectable
-- fallible
-- replaceable
+### 1. Coordinate shared state; don't orchestrate agents
 
-The control plane is where long-term strategic value accumulates.
+Limen's job ends at the boundary where an agent mutates a shared resource. It does not start, stop, schedule, route, or supervise anything. This is the line that keeps the project small and the category clean: orchestration is crowded and model-coupled; *coordination of the writes that orchestration produces* is nearly empty and model-agnostic.
 
-## Principle 3: Reasoning Is Volatile; Contracts And Verification Must Survive Model Churn
+A useful test: if a feature only makes sense once you assume Limen is in charge of the agents, it is out of scope. Limen is never in charge.
 
-Model quality is real, but it is unstable.
+### 2. Advisory-first
 
-Provider availability changes. Tool behavior changes. Routing assumptions age badly. Benchmark wins decay. A runtime that treats reasoning quality as fixed infrastructure will inherit that volatility.
+A Limen lease conflicts only with other lease attempts. It does not physically stop an agent from touching a file. This is a chosen, well-precedented posture, not a weakness papered over.
 
-Crawfish should therefore assume:
+Burrows put the rationale exactly, in choosing advisory over mandatory locks for Chubby (OSDI 2006): locks "conflict only with other attempts to acquire the same lock … We rejected mandatory locks [because] Chubby locks often protect resources implemented by other services, rather than just the file associated with the lock." That is Limen's situation precisely — it guards a workspace it does not own. POSIX `flock(2)` says the same at the OS level: "a process is free to ignore the use of flock()."
 
-- reasoning surfaces are changeable
-- self-reported success is weak evidence
-- deterministic verification is a first-class runtime behavior
-- continuity must preserve useful work even when the best reasoning route disappears
+The deeper reason is adoption. A mandatory lock you can only honor by rewriting every harness will be honored by none of them. An advisory lease that any MCP host can call with zero bespoke integration will be honored by the cooperating majority — and in this beachhead the agents *want* not to clobber each other, so cooperation is the common case, not the adversarial one. **A guarantee nobody opts into is worth nothing.**
 
-This is why `verify_loop` matters. It is not a coding gimmick. It is a way to make correctness less dependent on one model's current mood.
+### 3. Servant, not ruler
 
-## Principle 4: Institutions Lag Capability Growth; Runtime Guardrails Cannot
+The infrastructure that won was descriptive, not governing. Limen joins it.
 
-The social, legal, and organizational rules around agents will arrive late.
+| It says | "I do this" | "I do **not** do this" |
+| --- | --- | --- |
+| Git | I track diffs | I manage your code |
+| MCP | I define the tool-call wire format | I control your agent |
+| OpenTelemetry | I define the span format | I supervise your system |
+| OAuth | I define the authorization handshake | I decide who you are |
+| **Limen** | **I issue leases and witness writes** | **I govern your agent swarm** |
 
-That lag is predictable. Systems should not wait for every policy regime, enterprise standard, or ecosystem treaty to be perfect before they encode guardrails. If the software can already act, the runtime already needs:
+MCP states its own charter this way: it "focuses solely on the protocol for context exchange — it does not dictate how AI applications use LLMs or manage the provided context." Limen adopts the identical stance — one more advisory MCP server, not a control plane. This is also a correction of course: Limen's predecessor over-reached into "control plane / law layer / governed swarm" language, and that over-reach is exactly what this project is escaping.
 
-- owner attribution
-- trust-domain classification
-- encounter policy
-- approval and lease semantics
-- revocation
-- audit receipts
+### 4. A general primitive, proven on a narrow beachhead
 
-Crawfish should be law-like earlier than the market feels comfortable with, because the capability curve will move first.
+The durable category is **coordination of concurrent autonomous agents over shared mutable state**. The beachhead is **multi-harness coding over a git repo via MCP**. Holding the category while shipping a narrow first instance is the strategy, not a contradiction.
 
-## Principle 5: Constitutions Do Not Enforce Themselves
+The category long predates LLMs. It is the **blackboard** pattern (Hearsay-II, Erman et al. 1980; Nii 1986): many independent agents cooperating by mutating one shared, region-partitioned state. It is the **tuple space** (Gelernter, *Linda*, 1985), whose atomic destructive `in` is essentially "claim authority over a region before acting," and whose motto — coordination is orthogonal to computation — is Limen's stance verbatim. Limen generalizes these with one deliberate inversion: where Hearsay-II *centralizes* a scheduler that decides which knowledge source runs, Limen removes central scheduling — the writers self-coordinate by claiming regions. That is servant-not-ruler at the architectural level. The **actor model** (Hewitt 1973; Agha 1986) is the foil: it dodges the whole problem by never sharing state. Limen accepts the premise actors reject — today's heterogeneous harnesses *already* share one repo and cannot be rewritten as pure actors — so the shared state must be coordinated, not wished away.
 
-High-level rules are necessary. They are still incomplete.
+The generalization axes (writers, namespace, region, transport, locality) are tabulated in [`boundaries.md`](boundaries.md).
 
-Anthropic's [Constitutional AI](https://www.anthropic.com/research/constitutional-ai-harmlessness-from-ai-feedback/) and [Claude's Constitution](https://www.anthropic.com/constitution) are important reference points for rule-guided model behavior. They show how principles can shape a model. They do not by themselves solve the runtime problem of roaming agents, mixed owners, mutable workspaces, or external harnesses.
+### 5. Three coordinatable zero-trust primitives (and why the fourth is only partial)
 
-A runtime has to answer harder questions:
+Anthropic's *Zero Trust for AI agents* (2026) frames the agentic shift in two adjacent sentences:
 
-- which jurisdiction applies here
-- which checkpoint must run before execution continues
-- what evidence proves the checkpoint happened
-- what escalation path exists when the check cannot be enforced
+> "Zero Trust — trust nothing, verify everything, and assume breach has already occurred — gives security leaders a proven foundation to address this."
+>
+> "But the principles need new shape for agentic systems: identities that are cryptographically rooted, permissions scoped per task, memory protected against poisoning, and defensive operations that run at the speed of autonomous attackers."
 
-Without checkpoints, evidence, and escalation, a constitution is advisory text. Crawfish therefore treats doctrine as executable runtime structure: doctrine packs, jurisdiction classes, oversight checkpoints, enforcement records, and policy incidents.
+Three of those four requirements map directly onto Limen's runtime primitives. The fourth is only partial in the MVP.
 
-## Principle 6: Frontier Enforcement Gap Is A Runtime Problem, Not Just A Policy Problem
+| Zero-trust requirement | Limen primitive | Lineage |
+| --- | --- | --- |
+| permissions **scoped per task** | **Lease** — advisory, region-scoped, time-bounded authority to mutate | Least privilege (Saltzer & Schroeder 1975); NIST SP 800-207 tenet 3 (per-session, "least privileges needed to complete the task"); Just-In-Time / Just-Enough-Access; Gray & Cheriton 1989 |
+| **assume breach** has occurred | **Witness** — mediated-write audit trail: bytes + SHA-256 + agent label per write | NIST SP 800-207 tenet 7 (collect pervasive telemetry); "minimize blast radius, use analytics for visibility" |
+| identities **cryptographically rooted** | **Identity** — per-agent label today; ed25519 signing planned | NIST SP 800-207 tenet 4 (policy keyed on client identity) |
+| defensive ops **at machine speed** (agentic SOAR) | **Conflict arbitration at write time** — *partial* | the agentic-SOAR framing (industry usage) |
 
-The most dangerous failures in swarm systems will not be only “bad rules.” They will be cases where good rules exist but the runtime cannot prove enforcement.
+The lease is least privilege made **temporal and spatial**: bracketed in time (acquire late, auto-expire) and in space (one region). Saltzer & Schroeder (1975) state the principle precisely — "Every program and every user of the system should operate using the least set of privileges necessary to complete the job." The lease is also **capability-inspired** (the *capability* concept is Dennis & Van Horn, 1966) — but only inspired: until ed25519 signing and mediation land, a Limen lease is not an unforgeable token, and we do not claim object-capability-grade unforgeability today.
 
-That frontier gap appears when:
+The fourth primitive is honestly scoped down. Limen does real-time arbitration *at acquisition and write time* — that is "machine-speed response" in the narrow coordination sense — but Limen is **not** a SOAR product: no detect–decide–respond loop against an adversary, no incident response. The mapping is an analogy, not an identity.
 
-- policy says a review is required but no post-result checkpoint exists
-- a capability is proposal-only in theory but a harness can still mutate by accident
-- a trust boundary is named but not compiled into admission and dispatch behavior
-- a doctrine exists but no operator signal appears when the doctrine is bypassed or underspecified
+A posture guardrail when citing this lineage: NIST, Microsoft, and the object-capability tradition are all *enforcing* models. Cite them for vocabulary and lineage, **not** for posture. Limen is advisory-first.
 
-Crawfish should surface this gap explicitly. It should not silently treat missing enforcement as success.
+### 6. Prevention before the write, not merge after it
 
-That is why the runtime needs:
+There is a well-mapped spectrum from pessimistic to optimistic concurrency: **prevent** (Dijkstra's critical section 1965; Lamport's bakery 1974; Linda's atomic `in`) → **speculate, then commit-or-abort** (Software Transactional Memory; Shavit & Touitou, PODC 1995) → **merge after every write** (Operational Transformation, Ellis & Gibbs 1989, the backbone of Google Docs; CRDTs, Shapiro et al. 2011).
 
-- policy incidents
-- checkpoint status
-- doctrine summaries on inspected actions
-- review queues and alerts when enforcement is incomplete
+Limen sits at the pessimistic end, and on purpose. CRDT/OT achieve convergence **without coordination**, but only over data types engineered to commute — positional text, counters, sets. Limen's beachhead state is source files, configs, infrastructure, where two edits frequently *do not* commute: change an API signature one agent still calls, and "merge anyway" yields a broken build, not a reconciled document. No least-upper-bound merge or operational transform can fix a semantic, cross-file break. Because Limen cannot roll back a filesystem the way STM rolls back memory, it warns **before** the overlapping write rather than reconciling after.
 
-## Principle 7: Evaluation Is How A Swarm Learns Without Becoming Opaque
+This is also why Limen **complements git rather than competing with it.** Git is asynchronous merge-after-the-fact; Limen is synchronous conflict-prevention before the write. And git cannot attribute an agent — `git blame` shows only the human who launched the harness — whereas Limen's witness records the agent label per write. One prevents the lost update up front; the other reconciles what remains.
 
-The swarm will not become reliable by accumulating more raw traces alone.
+Stated crisply: **CRDT/OT = automatic merge-after-write over specially-designed convergent state; Limen = advisory, region-scoped, time-bounded prevention-before-write over arbitrary non-convergent shared mutable state.**
 
-Observability is the rear-view mirror. Evaluation is the learning loop.
+### 7. Every claimed benefit must be falsifiable and measured
 
-LangSmith provides a useful reference shape for this through its [observability concepts](https://docs.langchain.com/langsmith/observability-concepts), [pairwise evaluation](https://docs.langchain.com/langsmith/evaluate-pairwise), [annotation queues](https://docs.langchain.com/langsmith/annotation-queues), [automation rules](https://docs.langchain.com/langsmith/set-up-automation-rules), and [experiment comparison](https://docs.langchain.com/langsmith/compare-experiment-results): traces, evaluation, comparison, review, and operator automation belong to one system. Crawfish should absorb that lesson at the runtime layer.
+Limen makes a claim that an experiment can prove wrong — which is what keeps it paper-grade rather than rhetorical:
 
-This means:
+> At a fixed degree of parallelism N, **`Par-N-Limen` Pareto-dominates `Par-N-Naive`** on (wall-clock × pass@1) — no worse on either, strictly better on at least one — while strictly dominating on lost-edit-lines, build-break-rate, and attribution accuracy.
 
-- every significant action should become a trace bundle
-- deterministic scorecards should produce durable evaluation records
-- pairwise comparison should teach routing choices without hiding disagreement behind one aggregate score
-- review queues should capture “needs human eyes” cases without erasing history
-- feedback should be structured and reusable, not trapped in ad-hoc operator memory
-- dataset cases should turn production traces into replayable institutional memory
-- replay experiments should let the swarm learn from prior work without contaminating production operator queues
+The three-arm ablation is **Seq-1** (one agent, sequential — the correctness ceiling and latency baseline), **Par-N-Naive** (N concurrent agents, no coordination), **Par-N-Limen** (N concurrent agents behind advisory leases). The claim is *Pareto-dominance at fixed N*, deliberately **not** "more agents win" — the scaling literature shows parallelism has diminishing or negative returns past a strong single-agent baseline, so a monotone claim would be unsupportable. The naive arm's cost is empirically real, not a strawman: CodeCRDT (Pugachev, arXiv:2510.18893, 2025) measures parallel multi-agent code generation and finds speedups on some tasks and slowdowns on others, with nonzero semantic-conflict rates. The correctness metric is pass@k (Chen et al., 2021); the stricter reliability framing is pass^k (all k repeated runs succeed) — and the sharpest hypothesis is that Par-N-Naive may *match* on pass@1 yet *collapse* on pass^k from non-deterministic collisions, with Limen compressing that gap.
 
-Evaluation is not just reporting. It is how the swarm improves while staying inspectable.
+The full design, metrics, comparables, and threats to validity are scaffolded in [`related-work.md`](related-work.md).
 
-## Principle 8: Institutions Lag Capability Growth
+---
 
-Capability growth outruns process. That is not a temporary bug in the market; it is the normal order of technological change.
+## Tensions we hold honestly
 
-The relevant system question is therefore not whether constitutions, enterprise processes, and norms matter. They do. The question is whether the runtime can keep order while those institutions are still catching up.
+A philosophy that only lists its strengths is marketing. These are the real edges.
 
-Crawfish should assume:
+**Advisory is a weak guarantee, and bypass is real.** An agent that ignores `limen_acquire` and writes directly is not stopped — Limen issues, it does not enforce at the kernel. Four things make this the right trade anyway: (i) it is the same trade Chubby and `flock` made deliberately, at scale; (ii) the witness trail converts "prevented" into "attributed" — *assume breach* made concrete, so a bypass is at least forensically reconstructable beyond `git blame`; (iii) the beachhead is cooperative by nature; (iv) advisory is the *only* posture that achieves adoption across harnesses that cannot be compelled to participate. The MVP must not over-claim: it is capability-inspired, not capability-enforced, until ed25519 signing plus mediation land.
 
-- model behavior standards will remain partial and uneven
-- organizational review capacity will be limited
-- multi-owner swarm encounters will arrive before ecosystem-wide treaties do
-- evaluation and doctrine will need to serve as provisional institutional memory
+**Prefix leases can be too coarse.** The MVP's region match is literal-path / directory-prefix only (no globs): a lease on `src/` conflicts with any write beneath it. This can serialize agents that would not actually have collided (false conflicts), and a lease on `src/` says nothing about a Write Skew between `src/api/` and `src/caller/`. Coarse granularity buys a simple, fast, auditable conflict check for the MVP; finer regions (globs, byte ranges, semantic regions) are future work, and the witness trail is the backstop for the skew cases leases cannot see.
 
-This is why review queues, alerts, dataset capture, replay, and checkpoint evidence belong in the runtime itself rather than in post hoc dashboards alone.
+**"Don't build multi-agent systems" is the strongest counter-argument — and Limen agrees with it.** Cognition argues parallel sub-agents are fragile and the right default is a single linear agent. If so, why a multi-agent coordination layer? Because **Limen does not advocate multi-agent; it makes the multi-agent that already happens safer.** It is agnostic on whether you *should* run concurrent agents and observes that people *already do* — multiple harnesses, multiple humans, sub-agent fan-out. Even Anthropic's own multi-agent research system notes that "subagents cannot coordinate with each other" and that shared-context, write-heavy coding is "not a good fit for multi-agent systems today." Cognition's cure (collapse to one agent, or engineer richer in-app context) does not reach the case where *independent* harnesses share one repo with no common parent. Cognition advises on architecture; Limen provides safety for the concurrency that exists regardless.
 
-The reason is not just operational hygiene. It is institutional memory. If swarms are going to operate in frontier conditions before broader governance catches up, then traces, evaluations, review queues, and replay datasets become the runtime's way to remember, compare, and correct behavior without pretending the constitution enforced itself.
+**There is a nearest cousin, and we name it.** It is not true that "almost nobody" coordinates concurrent writes across independent harnesses. **MCP Agent Mail** (Dicklesworthstone, 2025) occupies almost exactly this beachhead: advisory TTL-leased file reservations, per-agent identities, and a Git-backed audit trail for heterogeneous coding harnesses over MCP. Its existence **validates the category** rather than refuting Limen. Limen's defensible differentiation is narrowness and purity — three primitives over path-pattern regions with a crisply typed conflict matrix, *mediating the write itself* (`limen_write` records bytes + SHA-256 + agent label) rather than only reserving and relying on a hook, and deliberately not layering a messaging/mailbox model on top. The honest claim is therefore the **generalized category plus a rigorous experiment**, not "first advisory file lease for coding agents."
 
-## Principle 9: Design For Future Multi-Owner Encounters, Not Yesterday's App Sandbox
+---
 
-The same laptop is already a frontier.
+## One line
 
-A local swarm can contain a personal agent, a company-bound agent, a tool-driven ops agent, and a roaming harness-backed session, each with different owners, context, and rights. The runtime should therefore assume that future federation problems are already visible locally in smaller form.
+Limen is **advisory, region-scoped, time-bounded prevention-before-write over arbitrary shared mutable state** — the fifty-year lost-update cure (leases, advisory locking, mutual exclusion, blackboard/tuple-space coordination) ported to non-deterministic, lock-naïve, mutually-blind agents, joined to the zero-trust triple of identity + per-task lease + witnessed audit, shipped servant-not-ruler on a sharp coding beachhead in service of a durable general category.
 
-That means:
-
-- same-device foreign-owner encounters are first-class
-- workspace, memory, secrets, and network access are boundary objects
-- cooperation is leased, not implied
-- inspection and audit are product behavior, not incident response afterthoughts
-
-If the local model is coherent, it can extend outward. If it is not coherent locally, no federation story will save it later.
-
-The next frontier after same-device governance is treaty-governed remote delegation. The [A2A project](https://github.com/a2aproject/A2A) is useful because it provides a task-oriented remote-agent plane, but the runtime still has to decide when delegation is lawful, which treaty pack applies, and which evidence proves the delegation stayed inside scope.
-
-## Principle 10: Treaties Precede Marketplaces
-
-Remote-agent delegation should not begin with a marketplace mindset. It should begin with treaty semantics.
-
-Before swarms can safely rely on reputation systems, federation packs, or delegated service catalogs, they need a narrower legal core:
-
-- which remote principal is recognized
-- which capabilities are allowed to cross the boundary
-- which data scopes may leave the local control plane
-- which artifact classes may come back
-- which checkpoints must run before the result is trusted
-- what happens when evidence is missing
-
-This is why Crawfish treats remote delegation as treaty-governed rather than merely discoverable. The [A2A project](https://github.com/a2aproject/A2A) provides the remote task shape; Crawfish adds the requirement that delegation must be justified before dispatch and governable after result.
-
-The correct order is:
-
-1. treaty
-2. federation interpretation
-3. evidence
-4. escalation
-5. only later, broader federation economics
-
-If that order is reversed, the swarm scales contact before it scales law.
-
-## Principle 10.5: Treaties Are Necessary, But Not Sufficient
-
-A treaty decides whether remote delegation is lawful. It does not, by itself, decide how the local control plane should interpret every remote state and remote result that follows.
-
-That is why Crawfish now adds federation packs on top of treaties:
-
-- a treaty says whether delegation is allowed
-- a federation pack says how `input-required`, `auth-required`, evidence gaps, scope violations, and returned results should be interpreted
-- a control plane therefore stays consistent across remote attempts instead of scattering escalation logic across adapters
-
-This matters because frontier governance often fails after the remote side replies, not before it starts. A system that can say “yes, you may delegate” but cannot say “this remote result must be reviewed” is still under-governed.
-
-## Principle 11: Remote Results Must Be Governed, Not Just Remote Calls
-
-Delegation risk does not end when the remote task starts. It becomes more subtle when the result comes back.
-
-A remote result may still be unacceptable if:
-
-- the runtime cannot prove the remote terminal state
-- the returned artifact class was outside treaty scope
-- the returned data scope exceeded what the treaty allowed
-- the treaty required evidence that never arrived
-
-That is why post-result governance is part of the control plane rather than an afterthought in application code. Remote outcomes need a disposition:
-
-- accepted
-- review required
-- rejected
-
-Without that distinction, remote delegation turns every successful HTTP response into an ambient trust event.
-
-The same lesson applies to evaluation. A remote result should not be judged only by whether it produced plausible content. It also needs to be judged by whether the frontier evidence chain held together. In practical terms, that means remote outcomes need scorecards that can inspect treaty violations, federation decisions, remote outcome disposition, delegation receipts, and checkpoint evidence rather than only the returned artifact text.
-
-## Principle 11.5: Remote Outcomes Must Be Admissible, Not Merely Available
-
-A remote result is not automatically admissible just because a remote task completed.
-
-For a frontier control plane, admissibility depends on whether the runtime can preserve enough evidence to support acceptance:
-
-- what treaty pack allowed the delegation
-- what federation pack interpreted the result
-- what remote state and terminal evidence actually came back
-- what artifact and data-scope evidence was observed
-- what policy incidents and treaty violations were recorded on the attempt
-
-This is why Crawfish now uses remote evidence bundles plus a remote review workflow. A treaty says the swarm may cross the boundary. A federation pack says how to interpret what comes back. The evidence bundle is what makes the result reviewable. The review workflow is what makes the final disposition actionable.
-
-Without those two layers, remote governance still collapses into “transport succeeded” instead of “result was admissible under swarm law.”
-
-## Principle 11.6: Admissibility Must Survive Another Attempt
-
-Some remote outcomes should not be auto-accepted or auto-rejected. They should remain admissible only after additional evidence is requested, reviewed, and deliberately re-collected.
-
-That is why Crawfish now treats follow-up as a control-plane object rather than a loose operator note:
-
-- a `review_required` remote outcome may produce a structured remote follow-up request
-- the missing evidence must be named by the runtime, not improvised after the fact
-- the action stays blocked until an operator explicitly chooses to dispatch another remote attempt
-- the next remote attempt belongs to the same local action, so admissibility remains one continuous legal and evidentiary story
-
-This matters because frontier governance does not improve if every ambiguous remote result is either silently retried or manually papered over. A control plane has to preserve the old evidence, preserve the old review history, and still let the swarm ask for more proof.
-
-## Design Consequences
-
-These principles imply concrete architectural choices:
-
-- Crawfish is **Rust-first, not Rust-only**
-  - the runtime spine lives in Rust
-  - isolated edge bridges may use other languages when that lowers integration friction
-- execution strategy is separate from harness selection
-  - `single_pass` and `verify_loop` are runtime patterns
-  - OpenClaw, deterministic executors, and future adapters are execution surfaces
-- continuity and governance are product surfaces
-  - not hidden in internal scripts
-  - not left to application glue
-- doctrine and evaluation are runtime layers
-  - not just documentation language
-  - not only future UI ideas
-- treaties are runtime law, not partner metadata
-  - remote delegation requires scope, evidence, and escalation
-  - post-result governance is as important as dispatch-time governance
-- federation packs are runtime interpretation, not marketplace metadata
-  - they make remote escalation rules inspectable and reusable
-  - they keep remote-state and remote-result handling consistent across delegations
-- public terminology should stay future-correct
-  - `swarm`, not `fleet`
-  - `general-purpose harness`, not `coding-only harness`
-
-## What This Means For The Roadmap
-
-The roadmap should bias toward:
-
-- stronger verification
-- stronger governance
-- stronger doctrine enforcement and visible frontier-gap reporting
-- richer evaluation spines and operator review flows
-- richer harness interoperability without category confusion
-- better operator visibility
-
-It should avoid:
-
-- overfitting the product narrative to coding-only use cases
-- treating one harness as the product center
-- shipping more autonomy before guardrails, continuity, and inspection are ready
+For what Limen explicitly is *not*, see [`boundaries.md`](boundaries.md).

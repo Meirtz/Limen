@@ -19,7 +19,7 @@ Before opening an issue:
 
 - operating system
 - Rust version
-- Crawfish commit or branch
+- Limen commit or branch
 - relevant config snippets
 - exact CLI command
 - actual vs expected behavior

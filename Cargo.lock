@@ -1441,6 +1441,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "limen"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

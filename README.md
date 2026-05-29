@@ -1,470 +1,199 @@
-![Crawfish hero](docs/assets/readme-hero.svg)
+# Limen
 
-# Crawfish
+> **A workspace coordination daemon for AI agents.** When several AI coding agents share one repository, Limen hands each a boundary-scoped **write lease** and a **witnessed audit trail** — so they stop silently overwriting each other. It does not run your agents; it keeps them from colliding.
 
-> **Crawfish is the control plane for governed agent swarms.**
->
-> **Harnesses are abundant. Constitutions are not enough. Evaluation is how a swarm learns without becoming opaque.**
+![status](https://img.shields.io/badge/status-alpha-orange) ![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue) ![rust](https://img.shields.io/badge/rust-1.88%2B-orange) ![protocol](https://img.shields.io/badge/MCP-server-black)
 
-Harnesses are abundant. Cognition is volatile. Governance is lagging.  
-Crawfish exists for the layer above all of that: lifecycle, contracts, continuity, verification, doctrine, and multi-owner control.
+**English** · [中文](README.zh.md)
 
-Crawfish is a **lifecycle-managed runtime** for agent swarms that need to survive real operating conditions: budgets, approvals, outages, degraded dependencies, foreign-owner encounters, and model churn. It is not another assistant shell, not another graph toy, and not a harness trying to pretend it is the whole system.
+Limen is a single small Rust daemon, exposed as an [MCP](https://modelcontextprotocol.io) server. It sits *beneath* the agents that share a workspace, at the one place they collide: the write. Its posture is deliberate — **servant, not ruler.** Like Git, MCP, OAuth, and OpenTelemetry, it *describes and issues*; it does not govern. It does not start, stop, schedule, route, or supervise any agent.
 
-## Why Now
+The narrow first target ("the beachhead") is multi-harness AI coding on one git repo. The durable idea behind it is general: **coordination of concurrent autonomous agents over shared, mutable state**, via three primitives — an advisory **lease**, a **witness** trail, and a per-agent **identity** — ported from forty years of distributed-systems concurrency control and joined to the [zero-trust-for-AI-agents](https://claude.com/blog/zero-trust-for-ai-agents) playbook.
 
-The agent stack is changing faster than the rules around it.
+---
 
-- Specialized harnesses keep multiplying: OpenClaw, Codex, Claude Code, Gemini CLI, ACP-compatible clients, and more.
-- The quality of reasoning is improving, but it is also unstable across vendors, models, and release cycles.
-- Governance and operational practice still trail capability growth.
-- Multi-owner agent encounters are no longer theoretical. They already happen on the same laptop.
+## The problem
 
-Most teams are still driving by the rear-view mirror, in the sense described by Notion's ["Steam, Steel, and Infinite Minds"](https://www.notion.com/blog/steam-steel-and-infinite-minds-ai): building with yesterday's application assumptions while swarm-scale agency is arriving with today's tools.
+Today a single developer's repo can have, at the same moment:
 
-Crawfish is built for that mismatch.
+- a **Claude Code** session refactoring `src/auth/`
+- a **Cursor** window open with a stale buffer
+- a **Codex** task running tests in the background
+- 2–3 **sub-agents** that Claude Code spawned, editing different files in parallel
 
-## Why Constitutions Are Not Enough
+**No layer coordinates them.** The consequences are concrete and reproducible:
 
-High-level principles matter. They are still not governance.
+| Failure | Consequence |
+| --- | --- |
+| Two agents write the same file at once | the later write clobbers the earlier — the first agent's work is **silently lost** |
+| Agent A changes a function signature; Agent B still calls the old one | **build break** / tests fail |
+| Cursor saves a buffer based on an old version | overwrites a change another agent just committed |
+| A background agent deletes a file the foreground is editing | the editor writes back a "deleted" ghost |
+| A bug appears and `git blame` shows only the human | **no attribution** — which agent, which prompt? |
 
-Anthropic's [Claude's Constitution](https://www.anthropic.com/constitution) is a strong example of rule-guided model behavior. Anthropic's earlier [Constitutional AI](https://www.anthropic.com/research/constitutional-ai-harmlessness-from-ai-feedback/) work made the same point at training time: written principles can shape behavior. But a constitution does not enforce itself once agents begin roaming across workspaces, owners, harnesses, and execution surfaces.
+This is the classic **lost-update / write-skew** problem (Berenson et al., SIGMOD 1995) — except databases and version control *earned* their safety with locks, snapshots, and merge discipline, and agents inherited none of it. They are non-deterministic writers, never written to take a lock, blind to each other. Limen ports the cure to the layer where the writers are agents and the shared state is a filesystem nobody locked.
 
-The frontier problem is different:
+---
 
-- a principle can say "do not overreach"
-- the runtime still needs a `pre_dispatch` checkpoint
-- the system still needs evidence that the checkpoint ran
-- the operator still needs escalation when the check cannot be enforced
+## How it works
 
-That is why Crawfish now treats governance as runtime structure, not policy prose:
+Two independent harnesses, sharing one repo, coordinating through one threshold — with almost no change to either:
 
-- doctrine packs
-- jurisdiction classes
-- oversight checkpoints
-- enforcement records
-- policy incidents
+```
+   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+   │ Claude Code │    │   Cursor    │    │  Codex CLI  │
+   │  + subagents│    │             │    │             │
+   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+          │ MCP (stdio)      │ MCP              │ MCP
+          ▼                  ▼                  ▼
+   ╔══════════════════════════════════════════════════╗
+   ║   limen serve   (stdio MCP server)               ║
+   ║   tools: limen_acquire / limen_write / release    ║
+   ╠══════════════════════════════════════════════════╣
+   ║   arbitration (lease conflicts) · witness (audit) ║
+   ╠══════════════════════════════════════════════════╣
+   ║   SQLite (.limen/state.db)  —  leases + writes    ║
+   ╚══════════════════════════════════════════════════╝
+```
 
-If a rule exists but no checkpoint, no evidence, and no escalation path exists, the swarm is still operating in a wild-west mode.
+1. Claude Code wants `src/auth/` → `limen_acquire("src/auth/", "write", "claude-code:sess-A")` → gets lease **L1** (TTL 5 min).
+2. Codex wants `src/auth/login.rs` → `limen_acquire(...)` → Limen sees L1 covers that path → returns **conflict** ("held by claude-code:sess-A"). Codex moves to non-conflicting `src/parser/`, or waits.
+3. Claude Code writes via `limen_write(L1, "src/auth/login.rs", …)` → Limen checks the path is in scope, writes the file, and records a witness (content hash, time, agent).
+4. Claude Code calls `limen_release(L1)` → `src/auth/` unlocks; Codex can take it.
+5. Any time, `limen audit` shows every write: path, bytes, hash, which agent, which lease.
 
-## Why Swarm, Not Assistant
-
-An assistant is usually imagined as a single interface.  
-A swarm is a governed system of bounded workers, harness-backed execution surfaces, tools, policies, and owners.
-
-Crawfish treats the future as swarm-shaped:
-
-- many agents, not one
-- many harnesses, not one
-- many owners and trust domains, not one
-- many continuity states, not a binary up/down illusion
-
-`Swarm` here does **not** imply shared trust, shared memory, or ambient context sharing. It means a governed collection of agents and harness-backed workers under one control plane.
-
-## Why Swarm, Not Role-Split Multi-Agent
-
-Much earlier "multi-agent" work was often about splitting roles inside one application, not governing real encounters across owners, harnesses, and trust boundaries.
-
-- LangChain's multi-agent docs frame the problem primarily as [context engineering](https://docs.langchain.com/oss/python/langchain/multi-agent): deciding what information each sub-agent should see and how much context to pass.
-- OpenAI's Agents SDK frames multi-agent coordination around [handoffs](https://openai.github.io/openai-agents-python/handoffs/) and shared run [context](https://openai.github.io/openai-agents-python/context/) inside one agentic application.
-- AutoGen's Swarm docs explicitly describe agents that [share the same message context](https://microsoft.github.io/autogen/0.7.3/user-guide/agentchat-user-guide/swarm.html).
-
-Those patterns are useful. They are not the same as the environment Crawfish is built for.
-
-Crawfish targets the point where "many" stops meaning "more prompt wrappers inside one app" and starts meaning:
-
-- many bounded workers, not one conversation tree
-- many owners, not one ambient authority
-- many harness surfaces, not one centrally managed loop
-- many real encounter boundaries, not only context partitioning
-
-That is why Crawfish needs doctrine, checkpoints, leases, evidence, evaluation, and escalation. Context split is coordination. Swarm governance is a different systems problem.
-
-## Why Crawfish Is Not Another Harness
-
-Harnesses are execution surfaces. Crawfish governs them.
-
-- OpenClaw is an interactive gateway-native harness surface.
-- Codex, Claude Code, Gemini CLI, and future ACP-compatible adapters are specialized general-purpose harnesses.
-- MCP tools are tool-plane integrations.
-- A2A is the first real remote-agent plane in the current design, using [Agent Cards and task-based delegation](https://github.com/a2aproject/A2A) in the shape introduced by Google's ["A2A: A New Era of Agent Interoperability"](https://developers.googleblog.com/a2a-a-new-era-of-agent-interoperability/).
-
-Crawfish does not compete by being one more reasoning loop. It competes by making many volatile reasoning loops behave like **one inspectable system**.
-
-## Start With Mainline Alpha
-
-The current supported getting-started path is deliberately narrow:
-
-- local swarm control
-- local-first `task.plan` under `verify_loop`
-- approval-gated local `workspace.patch.apply`
-- `incident.enrich` as the supporting workload
-- inspectable events, traces, evaluations, alerts, and restart recovery
-
-OpenClaw, A2A, treaties, federation packs, remote evidence, and remote follow-up remain in the repository as **experimental alpha** surfaces. They still compile and run under CI, but they are not the public happy path and they are not what `crawfish init` generates by default.
-
-The deeper remote-governance discussion is retained as an experimental appendix later in this document; it is not the mainline onboarding path.
-
-## Concept Discipline
-
-Crawfish keeps a broader architecture than it exposes on the public happy path.
-
-For the README, quickstart, and main benchmark story, keep the external model narrow:
-
-- local governed swarm runtime
-- lifecycle-managed actions
-- local-first `task.plan`
-- deterministic verification
-- approval-gated local mutation
-- inspectable traces, evaluations, reviews, and alerts
-
-The more advanced remote line remains implemented, but it should be read as retained experimental architecture rather than the default user journey. The compression rule is simple:
-
-- **treaty**: can remote delegation happen
-- **federation pack**: how remote states and results are interpreted
-- **evidence bundle**: what proof is required to admit the result
-- **follow-up**: how the same action continues when proof is incomplete
-
-## What The Control Plane Enforces
-
-Crawfish is opinionated about what must survive model churn.
-
-- **Lifecycle**: agents are supervised resources with desired state, health, drain behavior, degraded profiles, and recovery rules.
-- **Contracts**: deadlines, budgets, approval rules, mutation mode, and fallback policy are compiled into runtime behavior.
-- **Governance**: same-device foreign-owner encounters are classified, constrained, auditable, and revocable.
-- **Continuity**: when a model route or harness disappears, the swarm contracts into deterministic work, store-and-forward, or handoff instead of vanishing behind retries.
-- **Verification**: success is not whatever a model claims. Verification-sensitive work runs under deterministic checks and bounded retry budgets.
-- **Inspection**: actions expose phase, artifacts, checkpoints, external refs, event lineage, governance metadata, and operator-readable failure codes.
-
-## What Runs Today
-
-The current public happy path is **mainline alpha**: local swarm control, local harnesses, deterministic fallback, approval-gated local mutation, and inspectable evaluation.
-
-### Mainline Alpha
-
-- `task.plan` runs as a **local-first** planning path: `claude_code -> codex -> deterministic`
-- `task.plan` also runs under the implemented `verify_loop`, so local harness output and deterministic fallback are both forced through the same bounded verifier
-- `workspace.patch.apply` performs local deterministic edits under approval, grants, leases, revocation, workspace locks, and audit receipts
-- `incident.enrich` emits `incident_enrichment.json` and `incident_summary.md`
-- `repo.review` and `ci.triage` remain implemented supporting workloads
-- `repo.index` remains internal plumbing for repo-aware workloads
-
-### Experimental Alpha Surfaces
-
-The repository also contains implemented but **experimental alpha** surfaces:
-
-- OpenClaw inbound and outbound
-- A2A outbound remote-agent delegation
-- treaty / federation / remote evidence / remote follow-up lines
-
-They remain compiled and tested, but they are **not** the recommended getting-started path and they are no longer the default example or `crawfish init` template.
-
-## Verified Execution Strategies
-
-`verify_loop` is the first implemented execution strategy beyond `single_pass`.
-
-For `task.plan`, Crawfish now does this:
-
-1. Select an execution surface.
-2. Run one proposal attempt.
-3. Deterministically verify the result.
-4. Feed structured verification failures back into the next attempt.
-5. Stop on success, human handoff, or budget exhaustion.
-
-Today that surface can be:
-
-- a local Claude Code process
-- a local Codex process
-- an OpenClaw outbound run
-- a deterministic fallback planner
-
-This is where the project starts to look beyond the current generation of agent demos.  
-Reasoning quality will keep changing. Verification and control have to outlive that churn.
-
-## Evaluation Spine
-
-Tracing alone is not enough. Evaluation alone is not enough. A control plane needs both.
-
-LangSmith provides a useful reference shape here through its [observability concepts](https://docs.langchain.com/langsmith/observability-concepts), [pairwise evaluation](https://docs.langchain.com/langsmith/evaluate-pairwise), [annotation queues](https://docs.langchain.com/langsmith/annotation-queues), [automation rules](https://docs.langchain.com/langsmith/set-up-automation-rules), and [experiment comparison](https://docs.langchain.com/langsmith/compare-experiment-results): traces, datasets, evaluators, review, alerts, and comparison loops belong to one operational system. Crawfish does not copy LangSmith's product. It lifts that shape into swarm runtime infrastructure.
-
-The runtime now builds an **evaluation spine**:
-
-- `trace -> scorecard -> review queue -> alert -> dataset -> replay -> compare`
-
-That spine is attached to real action execution:
-
-- `task.plan`
-- `repo.review`
-- `incident.enrich`
-
-The point is not to build a hosted dashboard first. The point is to make swarms inspectable and corrigible before the UI arrives.
-
-Observability is the rear-view mirror. Evaluation is the learning loop.
-
-In Crawfish:
-
-- `TraceBundle` captures inputs, executor lineage, artifacts, events, external refs, and verification outputs
-- `EvaluationRecord` turns deterministic checks into durable quality evidence
-- `ReviewQueueItem` escalates work that should not quietly auto-complete
-- `FeedbackNote` lets operator judgment flow back into future iterations without rewriting history
-- `AlertRule` turns governance or evaluation failures into visible operator signals
-- `DatasetCase` freezes completed actions into replayable evaluation datasets with doctrine and jurisdiction metadata
-- `ExperimentRun` replays those cases against one executor surface so the swarm can learn without polluting production review queues
-
-For remote-agent work, that spine now treats the returned result as a governance event:
-
-- `task_plan_remote_default` scores remote outcome disposition, delegation receipt evidence, remote task lineage, and treaty-violation absence
-- federation metadata now carries through trace, review, alert, dataset, and replay paths so remote escalation stays visible after execution
-- A2A outcomes that come back as `review_required` or `rejected` are visible in the same trace, review, and alert substrate as local failures
-- remote-agent quality is therefore judged on both proposal quality and treaty evidence quality
-
-## Pairwise Review
-
-Single-run evaluation tells you whether one executor met the bar. Pairwise review tells you whether one route is actually better than another.
-
-Crawfish now treats executor-first comparison as a control-plane primitive:
-
-- launch two isolated experiment runs against one dataset
-- compare them deterministically before any human judgment
-- open a human review item only when the signals are too close or too conflicted to trust automation
-
-That shape is borrowed deliberately from LangSmith's [pairwise evaluation](https://docs.langchain.com/langsmith/evaluate-pairwise), [annotation queues](https://docs.langchain.com/langsmith/annotation-queues), and [experiment comparison](https://docs.langchain.com/langsmith/compare-experiment-results), but reinterpreted as runtime substrate rather than a hosted UI.
-
-The important product choice is what Crawfish does **not** do here:
-
-- no LLM-as-judge
-- no opaque winner selection
-- no prompt arena disconnected from runtime doctrine
-
-Instead, pairwise outcomes are driven by doctrine incidents, terminal status, normalized evaluation score, and explicit review resolution when automation should stop pretending certainty.
-
-Remote-agent comparisons inherit the same rule: a route that returns weaker frontier evidence or more treaty violations does not get to hide behind a technically successful transport call.
-
-## Philosophy
-
-The forward-looking product philosophy lives in [`docs/spec/philosophy.md`](docs/spec/philosophy.md).
-
-The short version:
-
-- build for swarm-age governance, not single-agent demos
-- harnesses are replaceable, control planes are strategic
-- reasoning is volatile; contracts and verification must survive model churn
-- institutions lag capability growth, as argued in Notion's ["Steam, Steel, and Infinite Minds"](https://www.notion.com/blog/steam-steel-and-infinite-minds-ai); runtime guardrails cannot
-- constitutions do not enforce themselves
-- constitutions guide models; institutions govern swarms
-- frontier enforcement gaps are runtime failures, not merely policy failures
-- evaluation is how a swarm learns without becoming opaque
-- treaties precede marketplaces, reputation, and federation packs
-- treaties decide whether delegation is lawful; federation packs decide how remote states and results are interpreted
-- evidence bundles and remote review workflow decide whether frontier results are admissible
-- design for future multi-owner encounters, not yesterday's app sandbox
-
-The supporting spec set lives in:
-
-- [`docs/spec/philosophy.md`](docs/spec/philosophy.md)
-- [`docs/spec/vision.md`](docs/spec/vision.md)
-- [`docs/spec/architecture.md`](docs/spec/architecture.md)
-- [`docs/spec/v0.1-plan.md`](docs/spec/v0.1-plan.md)
-- [`docs/spec/glossary.md`](docs/spec/glossary.md)
+---
 
 ## Quickstart
 
-The reference example lives under [`examples/hero-swarm/`](examples/hero-swarm/).
+Limen is alpha; build it from source:
 
 ```bash
-cargo test --workspace
-cargo run -p crawfish-cli --bin crawfish -- init ./sandbox
-cp examples/hero-swarm/Crawfish.toml ./sandbox/Crawfish.toml
-cp examples/hero-swarm/agents/task_planner.toml ./sandbox/agents/
-cp examples/hero-swarm/agents/workspace_editor.toml ./sandbox/agents/
-cp examples/hero-swarm/agents/incident_enricher.toml ./sandbox/agents/
-cd sandbox
-mkdir -p src docs incident
-printf 'pub fn value() -> u32 { 42 }\n' > src/lib.rs
-cp ../examples/hero-swarm/data/sample-incident.log incident/sample-incident.log
-cp ../examples/hero-swarm/data/service-manifest.toml incident/service-manifest.toml
-cargo run -p crawfish-cli --bin crawfish -- run &
-sleep 1
-
-cargo run -p crawfish-cli --bin crawfish -- action submit \
-  --target-agent task_planner \
-  --capability task.plan \
-  --goal "propose a rollout checklist" \
-  --caller-owner local-dev \
-  --inputs-json '{
-    "workspace_root": ".",
-    "objective": "Prepare a rollout checklist for tightening local validation around src/lib.rs",
-    "context_files": ["src/lib.rs"],
-    "desired_outputs": ["rollout checklist", "operator handoff"]
-  }' \
-  --json
-
-cargo run -p crawfish-cli --bin crawfish -- inspect <action-id> --json
-cargo run -p crawfish-cli --bin crawfish -- action events <action-id> --json
-cargo run -p crawfish-cli --bin crawfish -- action trace <action-id> --json
-cargo run -p crawfish-cli --bin crawfish -- action evals <action-id> --json
-cargo run -p crawfish-cli --bin crawfish -- review list --json
-
-cargo run -p crawfish-cli --bin crawfish -- action submit \
-  --target-agent workspace_editor \
-  --capability workspace.patch.apply \
-  --goal "materialize the rollout checklist" \
-  --caller-owner local-dev \
-  --workspace-write \
-  --mutating \
-  --inputs-json '{
-    "workspace_root": ".",
-    "edits": [{
-      "path": "docs/rollout-checklist.md",
-      "op": "create",
-      "contents": "# Rollout Checklist\n\n- Inspect src/lib.rs\n- Add validation coverage\n- Run targeted tests\n- Capture operator handoff\n"
-    }]
-  }' \
-  --json
-
-cargo run -p crawfish-cli --bin crawfish -- action list --phase awaiting_approval --json
-cargo run -p crawfish-cli --bin crawfish -- action approve <mutation-action-id> --approver local-dev --json
-
-cargo run -p crawfish-cli --bin crawfish -- action submit \
-  --target-agent incident_enricher \
-  --capability incident.enrich \
-  --goal "enrich local incident" \
-  --caller-owner local-dev \
-  --inputs-json '{
-    "service_name": "api",
-    "log_file": "incident/sample-incident.log",
-    "service_manifest_file": "incident/service-manifest.toml"
-  }' \
-  --json
-
-cargo run -p crawfish-cli --bin crawfish -- alert list --json
+cargo install --path crates/limen     # or: cargo build -p limen --release
 ```
 
-For the full reference walkthrough, run [`examples/hero-swarm/demo.sh`](examples/hero-swarm/demo.sh).
+Point any MCP-speaking harness at it. For **Claude Code** (`settings.json`):
 
-If `claude` or `codex` is installed locally, `task_planner` will prefer those harnesses first. If neither local wrapper is available, Crawfish falls back to deterministic planning when the compiled contract allows it.
+```json
+{
+  "mcpServers": {
+    "limen": {
+      "command": "limen",
+      "args": ["serve", "--db", ".limen/state.db"]
+    }
+  }
+}
+```
 
-## Public Status
+That's it — Claude Code, Cursor, Codex, and others can now call three tools:
 
-Crawfish is public and maintained seriously, but it is still **alpha**.
+| Tool | Inputs | Returns |
+| --- | --- | --- |
+| `limen_acquire` | `path_pattern`, `intent` (`read`\|`write`\|`propose`), `agent_label`, `ttl_ms?` | `lease_id`, `expires_at` — or a conflict |
+| `limen_write` | `lease_id`, `path`, `content` | `content_hash`, `bytes_written` |
+| `limen_release` | `lease_id` | `released: bool` |
+
+Inspect what happened at any time:
+
+```bash
+limen audit --db .limen/state.db        # active leases + recent witnessed writes
+```
+
+---
+
+## Concepts
+
+Limen has exactly five first-class concepts, each backed by a real type in the code — no invented vocabulary. Full definitions in [`docs/spec/glossary.md`](docs/spec/glossary.md).
+
+| Concept | Meaning | Today |
+| --- | --- | --- |
+| **identity** | who is requesting | plaintext agent label (`claude-code:sess-A`); ed25519 planned |
+| **boundary** (a *limen*) | a region of the namespace | literal path or directory prefix (`src/auth/`) |
+| **lease** | time-bounded authority over a boundary | intent + TTL (5 min) + state |
+| **intent** | what the holder means to do | `read` / `write` / `propose` |
+| **witness** | recorded evidence of a write | path, bytes, SHA-256, time, agent |
+
+**Conflict rule** (overlapping boundaries): `write × write` conflicts · `write × read` conflicts (reader yields) · `read × read` is fine · `propose` never conflicts.
+
+---
+
+## Scope: what Limen is — and is not
+
+Limen's predecessor died of conceptual sprawl; staying small is the whole point. Details in [`docs/spec/boundaries.md`](docs/spec/boundaries.md).
+
+| | |
+| --- | --- |
+| ✅ **is** | an advisory lease manager + write mediator + witness, over MCP; harness-neutral; value scales with how many harnesses run at once |
+| 🚫 **is not (yet)** | mandatory enforcement (it's advisory — it issues and witnesses, it doesn't intercept); a resident cluster service; multi-machine; cryptographic identity |
+| ⛔ **is not (ever)** | an agent runtime / orchestrator / scheduler; a governance / policy / "law" layer; a model or harness competitor |
+
+It coordinates **shared state**; it does not orchestrate agents. The line: if a feature only makes sense once Limen is *in charge* of an agent, it's out of scope — Limen is never in charge.
+
+---
+
+## Why now
+
+- **Harness explosion.** Claude Code, Cursor, Codex, Gemini CLI, Copilot CLI, aider, cline — running 2–3 at once is already normal.
+- **Sub-agent fan-out.** Mainstream harnesses spawn parallel sub-agents (Claude Code's `Agent` tool). A single harness is *already* multi-writer.
+- **Nobody owns this layer.** Harness vendors compete on the IDE experience; Anthropic is articulating the [zero-trust](https://claude.com/blog/zero-trust-for-ai-agents) paradigm. *"Let them coexist peacefully in one workspace"* is empty.
+
+---
+
+## The thesis we intend to prove
+
+Limen makes a claim an experiment can prove wrong — which is what keeps it honest rather than rhetorical:
+
+> At a fixed degree of parallelism N, **`Par-N-Limen` Pareto-dominates `Par-N-Naive`** on (wall-clock × pass@1) — no worse on either, strictly better on at least one — while strictly winning on lost-edit-lines, build-break-rate, and attribution.
+
+| Arm | Setup |
+| --- | --- |
+| **Seq-1** | one agent, sequential — correctness ceiling / latency baseline |
+| **Par-N-Naive** | N concurrent agents, no coordination |
+| **Par-N-Limen** | N concurrent agents behind advisory leases |
+
+Metrics: **pass@1** (and the stricter **pass^k** for reliability under repeated concurrent runs), **wall-clock**, **lost-edit-lines**, **build-break-rate**, **attribution-accuracy**. Full design, comparables, and threats to validity: [`docs/spec/related-work.md`](docs/spec/related-work.md). *(This is the evaluation plan, not measured results.)*
+
+---
+
+## Lineage
+
+Limen stands on settled ground, not on LLM-orchestration fashion — because reasoning is volatile and coordination is not.
+
+- **Concurrency control & leases:** Gray & Cheriton, *Leases* (SOSP 1989); Burrows, *Chubby* — advisory locking (OSDI 2006); ZooKeeper, etcd, Consul; POSIX `flock`; the lost-update/write-skew taxonomy (Berenson et al., SIGMOD 1995).
+- **Shared-state coordination:** blackboard systems (Hearsay-II), tuple spaces (Linda); the CRDT/OT *merge-after-write* family Limen contrasts with by *preventing before the write*.
+- **Zero trust for AI agents:** Anthropic's [Zero Trust for AI agents](https://claude.com/blog/zero-trust-for-ai-agents), grounded in NIST SP 800-207 and least privilege (Saltzer & Schroeder 1975).
+
+Annotated, verified bibliography: [`docs/references.md`](docs/references.md). Prior art in this exact space exists (notably MCP Agent Mail) — Limen's claim is the *generalized category plus a rigorous experiment*, not "first."
+
+---
+
+## Status
+
+Limen is **alpha** and honest about it.
 
 | Surface | Status |
 | --- | --- |
-| CLI | public, unstable |
-| `Crawfish.toml` and manifests | public, unstable |
-| local UDS HTTP API | public, unstable |
-| Rust workspace crates | public, unstable |
+| MVP (lease + write + release + audit, stdio MCP) | implemented |
+| enforcement | **advisory only** — agents can bypass; witness still attributes |
+| identity | plaintext label (ed25519 signing planned) |
+| scope | single machine, single workspace |
+| boundary matching | literal path / directory prefix (no globs yet) |
 
-Current support baseline:
+Lineage: AgentGraph → Crawfish → **Limen** (a refactor from an over-reaching "control plane for governed swarms" down to one sharp coordination primitive).
 
-- version posture: `0.x` / `alpha`
-- implementation posture: Rust-first, not Rust-only
-- supported runtime environments: macOS and Linux
-- supported MCP transport in the current codebase: SSE only
-- supported **mainline alpha** path: local swarm control and local-first `task.plan`
-- implemented but **experimental alpha** surfaces: OpenClaw, A2A, treaty/federation remote governance
+---
 
-Breaking alpha changes are allowed, but they must ship with:
+## Documentation
 
-- a changelog entry in [`docs/project/CHANGELOG.md`](docs/project/CHANGELOG.md)
-- README or spec updates
-- a migration note when the break is user-visible
+- [`docs/PRD.md`](docs/PRD.md) — product requirements
+- [`docs/spec/philosophy.md`](docs/spec/philosophy.md) — why this shape is correct ([中文](docs/spec/philosophy.zh.md))
+- [`docs/spec/boundaries.md`](docs/spec/boundaries.md) — what Limen is and is not ([中文](docs/spec/boundaries.zh.md))
+- [`docs/spec/glossary.md`](docs/spec/glossary.md) — canonical vocabulary ([中文](docs/spec/glossary.zh.md))
+- [`docs/spec/related-work.md`](docs/spec/related-work.md) — related work & experimental framing
+- [`docs/references.md`](docs/references.md) — annotated bibliography
 
-Primary alpha config direction:
+Contribution and security policy: [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) · [`.github/SECURITY.md`](.github/SECURITY.md).
 
-- `quality.evaluation_profile` is the primary evaluation selector
-- `quality.evaluation_hook` still parses during alpha, but it is deprecated and only normalized for legacy built-ins
+## License
 
-Project maintenance policy lives in:
-
-- [`docs/project/CHANGELOG.md`](docs/project/CHANGELOG.md)
-- [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md)
-- [`.github/SECURITY.md`](.github/SECURITY.md)
-- [`.github/SUPPORT.md`](.github/SUPPORT.md)
-
-## Experimental Alpha Appendix: Remote-Agent Governance
-
-The sections below describe retained but experimental remote-governance surfaces rather than the recommended onboarding path.
-
-### Why Remote Agents Are Not Just Another Harness
-
-Remote agents are not only remote processes. They are separate authorities.
-
-A harness crossing changes the execution surface. A remote-agent crossing changes the governance problem. A2A's [Agent Card](https://github.com/a2aproject/A2A) model and task lifecycle make that explicit: the runtime is delegating work to another agent system, not just spawning another wrapper on the same machine.
-
-That is why Crawfish treats remote delegation differently:
-
-- harnesses are selected execution surfaces
-- remote agents are treaty-governed delegation targets
-- federation packs decide how remote states, evidence gaps, and remote results are interpreted after delegation
-- doctrine still applies, but treaties decide whether cross-system delegation is allowed at all
-- remote task lineage, remote principal identity, and delegation receipts must remain inspectable
-
-### Why Treaties Precede Marketplaces
-
-Before reputation systems, marketplaces, or federation policy packs, a swarm needs a lawful basis for remote delegation.
-
-In Crawfish, that basis is the treaty.
-
-A treaty decides:
-
-- which remote principal is recognized
-- which capabilities may be delegated
-- which data scopes may cross the boundary
-- which artifact classes may come back
-- which checkpoints and result evidence are mandatory
-- whether missing evidence should be escalated or denied
-
-That is why the current [A2A](https://github.com/a2aproject/A2A) line is treaty-governed rather than marketplace-driven. Google's ["A2A: A New Era of Agent Interoperability"](https://developers.googleblog.com/a2a-a-new-era-of-agent-interoperability/) gives the task-plane shape. Crawfish adds the control-plane question: not just **can** the swarm delegate, but **under what treaty**, **with what evidence**, and **how does the runtime respond when the evidence comes back incomplete**.
-
-Markets can come later. The treaty has to come first.
-
-### Why Federation Packs Matter After The Treaty
-
-Treaties answer the first question: **may this swarm delegate across the boundary at all?**
-
-Federation packs answer the next question: **once the remote side starts talking back, how should the control plane interpret what it sees?**
-
-That second question matters because remote-agent governance does not end at dispatch:
-
-- a remote task can return `input-required`
-- it can demand auth instead of finishing
-- it can return artifacts that are technically well-formed but outside the allowed class or scope
-- it can finish without enough evidence for the local control plane to trust the result
-
-So Crawfish now separates the two responsibilities:
-
-- treaty packs define whether delegation is lawful
-- federation packs define how remote state, evidence, and results are escalated, reviewed, accepted, or rejected
-
-That is how a control plane turns remote delegation from “we made an HTTP call” into governable swarm behavior.
-
-### Why Evidence Bundles Decide Admissibility
-
-Treaties decide whether remote delegation is lawful. Federation packs decide how remote state and remote results should be interpreted. But neither is enough unless the runtime can produce an admissible evidence bundle when the remote side replies.
-
-That is why Crawfish now treats remote evidence as a first-class control-plane object:
-
-- remote terminal state evidence
-- remote artifact manifest
-- remote scope and data evidence
-- checkpoint evidence for `admission`, `pre_dispatch`, and `post_result`
-- treaty violations, policy incidents, and review disposition
-
-This follows the same broad lesson behind LangSmith's [observability concepts](https://docs.langchain.com/langsmith/observability-concepts): traces matter because they preserve evidence, not because they make the UI look richer. In Crawfish, evidence bundles are what decide whether a remote result is admissible, blocked for review, or rejected.
-
-Remote review is therefore not a UI-only feature. It is the operator workflow that turns a treaty-governed but ambiguous remote outcome into an explicit control-plane result:
-
-- `accept_result`
-- `reject_result`
-- `needs_followup`
-
-`needs_followup` is now a real control-plane continuation. Crawfish creates a structured `RemoteFollowupRequest`, keeps the action blocked, preserves the prior remote evidence bundle, and requires an explicit operator-triggered re-dispatch before the same action may create a fresh remote attempt.
-
-That is why the project is **Rust-first, not Rust-only**:
-
-- `crates/` is the implementation spine for the runtime, control plane, storage, and native outbound adapters.
-- `integrations/` is the edge zone for isolated bridge packages where a non-Rust implementation is pragmatic.
-- The current example is [`integrations/openclaw-inbound/`](integrations/openclaw-inbound/), a thin TypeScript ingress bridge. The policy engine, lifecycle authority, storage, and runtime decisions remain in Rust.
-
-Experimental remote and federation examples live under [`examples/experimental/`](examples/experimental/).
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

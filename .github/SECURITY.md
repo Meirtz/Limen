@@ -2,7 +2,7 @@
 
 ## Supported State
 
-Crawfish is currently an alpha project. Security fixes will be prioritized for the latest code on `main` and the latest unreleased work that is expected to merge soon.
+Limen is currently an alpha project. Security fixes will be prioritized for the latest code on `main` and the latest unreleased work that is expected to merge soon.
 
 There is no backward-compatibility or long-term support guarantee yet.
 

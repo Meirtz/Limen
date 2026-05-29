@@ -2,7 +2,7 @@
 
 ## Our Standard
 
-We want Crawfish to be a technically rigorous and respectful project.
+We want Limen to be a technically rigorous and respectful project.
 
 Examples of behavior that contribute to a healthy community:
 

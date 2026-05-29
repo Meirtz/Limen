@@ -1,8 +1,8 @@
-# Contributing to Crawfish
+# Contributing to Limen
 
 Thanks for contributing.
 
-Crawfish is a public Rust-first alpha project. We want serious maintenance discipline now, even though the public surfaces are still unstable.
+Limen is a public Rust alpha project — one small coordination daemon. We want serious maintenance discipline now, even though the public surfaces are still unstable.
 
 ## Before You Open A PR
 
@@ -29,19 +29,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Documentation And Changelog Discipline
 
 - If a change is user-visible, update [`../docs/project/CHANGELOG.md`](../docs/project/CHANGELOG.md).
-- If a change affects behavior in the runnable example, update these in the same PR:
-  - [`../README.md`](../README.md)
-  - [`../docs/spec/v0.1-plan.md`](../docs/spec/v0.1-plan.md)
-  - [`../examples/hero-swarm/Crawfish.toml`](../examples/hero-swarm/Crawfish.toml)
+- If a change affects user-visible behavior, update these in the same PR:
+  - [`../README.md`](../README.md) (and [`../README.zh.md`](../README.zh.md))
+  - the relevant spec under [`../docs/spec/`](../docs/spec/)
 - If a breaking alpha change affects users, include a short migration note in the changelog and docs.
 
 ## Public Surface Expectations
 
 The following surfaces are public but still unstable in alpha:
 
-- `crawfish` CLI
-- `Crawfish.toml` and agent manifest format
-- local UDS HTTP API
-- Rust workspace crates
+- the `limen` CLI (`serve`, `audit`)
+- the MCP tool surface (`limen_acquire` / `limen_write` / `limen_release`)
+- the on-disk state format (`.limen/state.db`)
+- the `limen` crate
 
 Breaking changes are allowed during alpha, but they must be explicit and documented.
