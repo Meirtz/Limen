@@ -12,18 +12,27 @@ Limen is a public Rust alpha project — one small coordination daemon. We want 
 
 ## Local Checks
 
-Run the required local gates before pushing:
+Run the same gate CI runs, before pushing:
 
 ```bash
-cargo fmt --all
-cargo test --workspace
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
+
+A change is not done until all three are clean, and a new behavior is not done until a test covers
+it. Never commit credentials, provider endpoints, or model identifiers — those live in your local
+environment, not the repository.
 
 ## Branch And Merge Policy
 
-- Maintainer and automation branches use the `codex/*` prefix.
-- External contributors may use any branch name, but PRs are squash-merged.
+`main` is protected: every change lands through a pull request, no one pushes to `main` directly,
+and three required CI checks (`ubuntu-stable`, `ubuntu-msrv`, `macos-stable`) must pass before
+merge. History stays linear (merge commits are disabled — rebase or squash).
+
+- Branch off `main` with a typed prefix: `feat/…`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`
+  (maintainer automation may use `codex/*`).
+- Open an issue first for major behavior, public-API, or architecture changes.
 - Release tags are cut from `main` only.
 
 ## Documentation And Changelog Discipline
