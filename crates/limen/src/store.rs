@@ -415,6 +415,30 @@ impl Store {
         rows.iter().map(row_to_lease).collect()
     }
 
+    /// Active **read** leases whose region overlaps `region` — the agents that *depend on* (read)
+    /// what a writer to `region` is about to change. This surfaces the write×read coupling so a
+    /// coordinator can advise the dependents; it is purely informational and never blocks the
+    /// write (servant, not ruler). Resource-agnostic — overlap is the [`Resource`]'s call.
+    pub async fn dependents(&self, region: &str) -> Result<Vec<Lease>, StoreError> {
+        let now = now_millis();
+        let rows = sqlx::query(
+            "SELECT id, path_pattern, intent, agent_label, acquired_at, expires_at, released_at, state \
+             FROM leases WHERE state = 'active' AND expires_at >= ?1 AND intent = 'read' \
+             ORDER BY acquired_at DESC, rowid DESC",
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for row in &rows {
+            let lease = row_to_lease(row)?;
+            if self.resource.regions_overlap(&lease.path_pattern, region) {
+                out.push(lease);
+            }
+        }
+        Ok(out)
+    }
+
     /// Mark active leases whose TTL has elapsed as expired, returning how many were swept. Audit
     /// hygiene: callers and the audit view then see only genuinely-held leases, without waiting
     /// for the next `acquire_lease` to lazily expire them.
@@ -853,6 +877,25 @@ mod tests {
             got, expected,
             "attribution must be a deterministic total order"
         );
+    }
+
+    #[tokio::test]
+    async fn dependents_lists_overlapping_readers() {
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .acquire_lease("src/", Intent::Read, "reader", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        store
+            .acquire_lease("docs/", Intent::Read, "elsewhere", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        // A writer about to change src/main.rs: only the reader of src/ depends on it.
+        let deps = store.dependents("src/main.rs").await.unwrap();
+        assert_eq!(deps.len(), 1, "exactly the overlapping reader");
+        assert_eq!(deps[0].agent_label, "reader");
+        // A region nobody reads has no dependents.
+        assert!(store.dependents("other/x").await.unwrap().is_empty());
     }
 
     #[tokio::test]
