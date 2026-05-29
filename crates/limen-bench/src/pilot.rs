@@ -161,6 +161,68 @@ pub fn py_interface_break() -> PilotTask {
     }
 }
 
+/// A three-way (N=3) shared-region merge: three agents add three functions to the **same** module.
+/// Naive last-writer-wins keeps only one (loses two); coordination composes all three. Confirms the
+/// gradient is not a two-agent artifact.
+pub fn py_three_way_shared() -> PilotTask {
+    PilotTask {
+        id: "py-three-way-shared".into(),
+        language: "python".into(),
+        coupling: Coupling::SharedRegion,
+        initial: vec![
+            ("mathx3/__init__.py".into(), String::new()),
+            ("mathx3/ops.py".into(), "\"\"\"ops\"\"\"\n".into()),
+        ],
+        subtasks: vec![
+            PilotSubtask::new(
+                "Add a function `def add(a, b): return a + b` to this module. Keep all existing content.",
+                "mathx3/ops.py",
+            ),
+            PilotSubtask::new(
+                "Add a function `def mul(a, b): return a * b` to this module. Keep all existing content.",
+                "mathx3/ops.py",
+            ),
+            PilotSubtask::new(
+                "Add a function `def sub(a, b): return a - b` to this module. Keep all existing content.",
+                "mathx3/ops.py",
+            ),
+        ],
+        test_cmd: py_test(
+            "from mathx3.ops import add, mul, sub; assert add(2,3)==5 and mul(2,3)==6 and sub(3,2)==1; print('ok')",
+        ),
+    }
+}
+
+/// An `interface` variant: the renamed function also gains a parameter, so the caller must update
+/// both the name and the call site — a stricter cross-file reconciliation.
+pub fn py_interface_signature_change() -> PilotTask {
+    PilotTask {
+        id: "py-interface-signature-change".into(),
+        language: "python".into(),
+        coupling: Coupling::Interface,
+        initial: vec![
+            ("svc2/__init__.py".into(), String::new()),
+            ("svc2/api.py".into(), "def greet(name):\n    return 'hi ' + name\n".into()),
+            (
+                "svc2/caller.py".into(),
+                "from svc2.api import greet\n\ndef run():\n    return greet('x')\n".into(),
+            ),
+        ],
+        subtasks: vec![
+            PilotSubtask::new(
+                "Rename `greet` to `salute` and add a second parameter `punct` with default `'!'`, returning `'hi ' + name + punct`.",
+                "svc2/api.py",
+            ),
+            PilotSubtask::new(
+                "Add a docstring to `run`. Keep the existing call as-is.",
+                "svc2/caller.py",
+            )
+            .reading("svc2/api.py"),
+        ],
+        test_cmd: py_test("from svc2.caller import run; assert run() == 'hi x!'; print('ok')"),
+    }
+}
+
 /// A **mixed-coupling** task: `n_shared` same-file merges plus `n_interface` cross-file
 /// rename/caller pairs, each in its own package, scored by one test that imports everything.
 /// Dialing `n_interface` vs `n_shared` sweeps the fraction of cross-file (write×read) coupling —
@@ -242,6 +304,8 @@ pub fn all() -> Vec<PilotTask> {
         py_shared_region_merge(),
         py_disjoint_independent(),
         py_interface_break(),
+        py_three_way_shared(),
+        py_interface_signature_change(),
     ]
 }
 

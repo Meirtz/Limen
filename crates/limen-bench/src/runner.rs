@@ -500,6 +500,33 @@ mod tests {
         assert!(!run.files["sh0/ops.py"].contains("# reconciled"));
     }
 
+    // The gradient is not a two-agent artifact: at N=3, naive keeps only the last writer; Limen
+    // composes all three.
+    #[tokio::test]
+    async fn three_way_shared_gradient_holds_at_n3() {
+        let task = crate::pilot::py_three_way_shared();
+        let exec = Executor::Local;
+        let naive = run_pilot(&task, &PilotAgent::Reference, Coordination::Naive, &exec, 1)
+            .await
+            .unwrap();
+        let limen = run_pilot(&task, &PilotAgent::Reference, Coordination::Limen, &exec, 1)
+            .await
+            .unwrap();
+        let ops_n = &naive.files["mathx3/ops.py"];
+        assert!(ops_n.contains("# edit by agent-C"));
+        assert!(
+            !ops_n.contains("# edit by agent-A") && !ops_n.contains("# edit by agent-B"),
+            "naive should lose two of three edits: {ops_n:?}"
+        );
+        let ops_l = &limen.files["mathx3/ops.py"];
+        assert!(
+            ops_l.contains("# edit by agent-A")
+                && ops_l.contains("# edit by agent-B")
+                && ops_l.contains("# edit by agent-C"),
+            "limen should compose all three: {ops_l:?}"
+        );
+    }
+
     #[tokio::test]
     async fn disjoint_is_unaffected_by_coordination() {
         let task = py_disjoint_independent();
