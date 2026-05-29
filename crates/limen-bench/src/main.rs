@@ -133,6 +133,14 @@ fn pilot_cmd() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+    let temperature: f32 = std::env::var("LIMEN_PILOT_TEMP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let max_tokens: u32 = std::env::var("LIMEN_PILOT_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2048);
     let out = std::path::PathBuf::from("results/pilot.jsonl");
     let short = |m: &str| m.rsplit('/').next().unwrap_or(m).to_string();
 
@@ -159,8 +167,8 @@ fn pilot_cmd() -> anyhow::Result<()> {
                             client: &client,
                             model: model.clone(),
                             params: CompletionParams {
-                                temperature: 0.0,
-                                max_tokens: 2048,
+                                temperature,
+                                max_tokens,
                                 seed: Some(seed),
                             },
                         };
