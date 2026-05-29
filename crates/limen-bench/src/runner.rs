@@ -29,6 +29,10 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coordination {
     Naive,
+    /// Limen's witnessed mediator but with a *stale* read (no fresh-read arbitration). It records
+    /// the witness yet still loses the shared-region edit — isolating the wrapper from the
+    /// arbitration (a kill-criterion guard: if Limen ≈ placebo, the win is a wrapper artifact).
+    LimenPlacebo,
     Limen,
     LimenDeps,
 }
@@ -37,9 +41,15 @@ impl Coordination {
     pub fn label(self) -> &'static str {
         match self {
             Coordination::Naive => "naive",
+            Coordination::LimenPlacebo => "limen-placebo",
             Coordination::Limen => "limen",
             Coordination::LimenDeps => "limen-deps",
         }
+    }
+
+    /// Whether the witnessed arms read the *current* file (fresh) or the initial snapshot (stale).
+    fn reads_fresh(self) -> bool {
+        !matches!(self, Coordination::LimenPlacebo)
     }
 }
 
@@ -188,17 +198,23 @@ pub async fn run_pilot(
                 write_file(root, &sub.region, &next)?;
             }
         }
-        Coordination::Limen | Coordination::LimenDeps => {
+        Coordination::Limen | Coordination::LimenDeps | Coordination::LimenPlacebo => {
             let store = Store::open(&root.join(".limen/state.db")).await?;
+            let fresh_read = coord.reads_fresh();
 
-            // Write phase: serialize on the file, fresh read, witnessed write.
+            // Write phase: serialize on the file via a witnessed lease. Fresh read composes
+            // (Limen); stale read witnesses but still loses the edit (placebo).
             for (i, sub) in task.subtasks.iter().enumerate() {
                 let abs_s = root.join(&sub.region).to_string_lossy().to_string();
                 let lease = store
                     .acquire_lease(&abs_s, Intent::Write, &labels[i], DEFAULT_LEASE_TTL_MS)
                     .await?;
-                let fresh = read_file(&sub.region);
-                let next = agent.edit(&labels[i], sub, &fresh).await?;
+                let current = if fresh_read {
+                    read_file(&sub.region)
+                } else {
+                    initial.get(&sub.region).cloned().unwrap_or_default()
+                };
+                let next = agent.edit(&labels[i], sub, &current).await?;
                 store
                     .record_write(&lease.id, &abs_s, next.as_bytes())
                     .await?;
@@ -336,6 +352,29 @@ mod tests {
         assert!(
             ops_limen.contains("# edit by agent-A") && ops_limen.contains("# edit by agent-B"),
             "limen should compose both edits: {ops_limen:?}"
+        );
+    }
+
+    // Placebo: the witnessed mediator with a STALE read still loses the edit (like naive) — so the
+    // Limen win is the fresh-read arbitration, not merely routing writes through the store.
+    #[tokio::test]
+    async fn limen_placebo_witnesses_but_still_loses_the_shared_region_edit() {
+        let task = py_shared_region_merge();
+        let exec = Executor::Local;
+        let placebo = run_pilot(
+            &task,
+            &PilotAgent::Reference,
+            Coordination::LimenPlacebo,
+            &exec,
+            1,
+        )
+        .await
+        .unwrap();
+        let ops = &placebo.files["mathx/ops.py"];
+        assert!(ops.contains("# edit by agent-B"));
+        assert!(
+            !ops.contains("# edit by agent-A"),
+            "placebo (stale read) should still lose agent-A's edit: {ops:?}"
         );
     }
 

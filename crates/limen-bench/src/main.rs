@@ -150,6 +150,7 @@ fn pilot_cmd() -> anyhow::Result<()> {
             for task in &tasks {
                 for coord in [
                     Coordination::Naive,
+                    Coordination::LimenPlacebo,
                     Coordination::Limen,
                     Coordination::LimenDeps,
                 ] {
