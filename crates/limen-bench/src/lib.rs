@@ -13,10 +13,12 @@
 //! Real-LLM harness adapters, the worktree/CRDT/peer arms, and the full grid are the
 //! compute-bound parts and live outside this skeleton (see `docs/experiments.md`).
 
+pub mod agent;
 pub mod arm;
 pub mod kv;
 pub mod model;
 pub mod oracle;
+pub mod pilot;
 pub mod record;
 pub mod sim;
 pub mod task;
