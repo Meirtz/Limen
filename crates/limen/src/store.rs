@@ -407,7 +407,7 @@ impl Store {
         let now = now_millis();
         let rows = sqlx::query(
             "SELECT id, path_pattern, intent, agent_label, acquired_at, expires_at, released_at, state \
-             FROM leases WHERE state = 'active' AND expires_at >= ?1 ORDER BY acquired_at DESC",
+             FROM leases WHERE state = 'active' AND expires_at >= ?1 ORDER BY acquired_at DESC, rowid DESC",
         )
         .bind(now)
         .fetch_all(&self.pool)
@@ -418,7 +418,7 @@ impl Store {
     pub async fn list_recent_writes(&self, limit: i64) -> Result<Vec<WriteRecord>, StoreError> {
         let rows = sqlx::query(
             "SELECT id, lease_id, path, bytes_written, content_hash, written_at \
-             FROM writes ORDER BY written_at DESC LIMIT ?1",
+             FROM writes ORDER BY written_at DESC, rowid DESC LIMIT ?1",
         )
         .bind(limit)
         .fetch_all(&self.pool)
@@ -434,7 +434,7 @@ impl Store {
     ) -> Result<Vec<(WriteRecord, String)>, StoreError> {
         let rows = sqlx::query(
             "SELECT w.id, w.lease_id, w.path, w.bytes_written, w.content_hash, w.written_at, l.agent_label \
-             FROM writes w JOIN leases l ON w.lease_id = l.id WHERE w.path = ?1 ORDER BY w.written_at DESC",
+             FROM writes w JOIN leases l ON w.lease_id = l.id WHERE w.path = ?1 ORDER BY w.written_at DESC, w.rowid DESC",
         )
         .bind(target)
         .fetch_all(&self.pool)
@@ -808,6 +808,37 @@ mod tests {
         let attrib = store.attribute_path(&good_path).await.unwrap();
         assert_eq!(attrib.len(), 1);
         assert_eq!(attrib[0].1, "agent-A");
+    }
+
+    #[tokio::test]
+    async fn attribution_order_is_deterministic_under_same_ms_writes() {
+        // Many writes to one path land within the same millisecond; attribution must still be a
+        // deterministic total order (newest insertion first), never a timestamp-tie coin flip.
+        // Random write ids cannot order ties, so the store falls back to insertion order (rowid).
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(&tmp.path().join("test.db")).await.unwrap();
+        let pattern = format!("{}/scope/", tmp.path().display());
+        let lease = store
+            .acquire_lease(&pattern, Intent::Write, "agent-A", DEFAULT_LEASE_TTL_MS)
+            .await
+            .unwrap();
+        let path = format!("{}/scope/k.txt", tmp.path().display());
+        for i in 0..8u8 {
+            store
+                .record_write(&lease.id, &path, format!("v{i}").as_bytes())
+                .await
+                .unwrap();
+        }
+        let rows = store.attribute_path(&path).await.unwrap();
+        let got: Vec<String> = rows.iter().map(|(w, _)| w.content_hash.clone()).collect();
+        let mut expected: Vec<String> = (0..8u8)
+            .map(|i| crate::resource::hex_sha256(format!("v{i}").as_bytes()))
+            .collect();
+        expected.reverse(); // newest-insertion-first
+        assert_eq!(
+            got, expected,
+            "attribution must be a deterministic total order"
+        );
     }
 
     #[tokio::test]
