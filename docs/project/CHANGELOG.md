@@ -48,6 +48,14 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   round-trip is an `#[ignore]`d test behind `REDIS_URL`. `limen serve --resource redis --redis-url
   redis://…` runs the daemon over Redis (clear error if the binary was built without `--features
   redis`); the filesystem remains the default.
+- **machine-readable witness export**: `limen audit --json` and `limen attribute <path> --json`
+  emit the same facts as the text output inside versioned envelopes (`limen.audit/v1` /
+  `limen.attribute/v1`) — active leases (id, region, intent, agent, expiry) and witnessed writes
+  (time, target, bytes, full SHA-256, lease id) — so an external verifier can consume the audit
+  trail without linking the crate or scraping the db. Same queries, second renderer; no new data
+  collection. Versioning rule: additive fields bump nothing (consumers ignore unknown fields);
+  renames/removals bump `/v1` → `/v2`. The shapes are pinned by an integration test against the
+  shipped binary.
 
 ### Process
 

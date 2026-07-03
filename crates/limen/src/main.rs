@@ -2,10 +2,11 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use limen::store::{self, Store};
+use limen::store::{self, Lease, Store, WriteRecord};
 use limen::{identity, mcp};
 
 /// Ready-to-paste MCP server config (Claude Code `settings.json` shape).
@@ -57,6 +58,10 @@ enum Command {
         db: PathBuf,
         #[arg(long, default_value_t = 20)]
         limit: i64,
+        /// Emit versioned JSON (`limen.audit/v1`) instead of human text — the same
+        /// facts, machine-readable for external verifiers.
+        #[arg(long)]
+        json: bool,
     },
     /// Show per-agent attribution for every witnessed write to a path.
     Attribute {
@@ -64,6 +69,10 @@ enum Command {
         path: String,
         #[arg(long, default_value = ".limen/state.db")]
         db: PathBuf,
+        /// Emit versioned JSON (`limen.attribute/v1`) instead of human text — the same
+        /// facts, machine-readable for external verifiers.
+        #[arg(long)]
+        json: bool,
     },
     /// Create the `.limen/` state directory and print MCP setup for your harnesses.
     Init {
@@ -92,6 +101,100 @@ enum Command {
     },
 }
 
+// --- Machine-readable witness export (`--json`) -----------------------------------------------
+//
+// Versioned envelopes over exactly the facts the human text output shows — the same store
+// queries, a second renderer, no new data collection. The schema-versioning rule: **adding**
+// a field is backward-compatible and bumps nothing (consumers must ignore unknown fields);
+// **renaming, removing, or changing the meaning of** a field bumps the version (`/v1` → `/v2`).
+// The shapes are pinned by `tests/json_export.rs`, so any change here is a conscious decision.
+
+/// Schema identifier for `limen audit --json`.
+const AUDIT_SCHEMA: &str = "limen.audit/v1";
+/// Schema identifier for `limen attribute <path> --json`.
+const ATTRIBUTE_SCHEMA: &str = "limen.attribute/v1";
+
+/// `limen audit --json`: active leases + recent witnessed writes.
+#[derive(Serialize)]
+struct AuditExport<'a> {
+    schema: &'static str,
+    active_leases: Vec<LeaseExport<'a>>,
+    recent_writes: Vec<WriteExport<'a>>,
+}
+
+/// One active lease, as the audit text shows it: id, region, intent, agent, expiry.
+#[derive(Serialize)]
+struct LeaseExport<'a> {
+    id: &'a str,
+    path_pattern: &'a str,
+    intent: &'static str,
+    agent_label: &'a str,
+    expires_at: i64,
+}
+
+impl<'a> From<&'a Lease> for LeaseExport<'a> {
+    fn from(l: &'a Lease) -> Self {
+        Self {
+            id: &l.id,
+            path_pattern: &l.path_pattern,
+            intent: l.intent.as_str(),
+            agent_label: &l.agent_label,
+            expires_at: l.expires_at,
+        }
+    }
+}
+
+/// One witnessed write, as the audit text shows it: time, target, bytes, hash, lease.
+/// The hash is the full SHA-256 hex (the text truncates for display; the fact is the digest).
+#[derive(Serialize)]
+struct WriteExport<'a> {
+    written_at: i64,
+    path: &'a str,
+    bytes_written: i64,
+    content_hash: &'a str,
+    lease_id: &'a str,
+}
+
+impl<'a> From<&'a WriteRecord> for WriteExport<'a> {
+    fn from(w: &'a WriteRecord) -> Self {
+        Self {
+            written_at: w.written_at,
+            path: &w.path,
+            bytes_written: w.bytes_written,
+            content_hash: &w.content_hash,
+            lease_id: &w.lease_id,
+        }
+    }
+}
+
+/// `limen attribute <path> --json`: every witnessed write to `path`, newest first.
+/// No writes is the same envelope with an empty `writes` array.
+#[derive(Serialize)]
+struct AttributeExport<'a> {
+    schema: &'static str,
+    path: &'a str,
+    writes: Vec<AttributionExport<'a>>,
+}
+
+/// One attribution row, as the attribute text shows it: time, agent, bytes, hash, lease.
+#[derive(Serialize)]
+struct AttributionExport<'a> {
+    written_at: i64,
+    agent_label: &'a str,
+    bytes_written: i64,
+    content_hash: &'a str,
+    lease_id: &'a str,
+}
+
+/// Serialize an export envelope to pretty JSON on stdout.
+fn print_json<T: Serialize>(export: &T) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(export).context("serializing json export")?
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -115,9 +218,17 @@ async fn main() -> Result<()> {
             tracing::info!("limen serve exiting");
             Ok(())
         }
-        Command::Audit { db, limit } => {
+        Command::Audit { db, limit, json } => {
             let store = Store::open(&db).await.context("opening store")?;
             let leases = store.list_active_leases().await?;
+            if json {
+                let writes = store.list_recent_writes(limit).await?;
+                return print_json(&AuditExport {
+                    schema: AUDIT_SCHEMA,
+                    active_leases: leases.iter().map(LeaseExport::from).collect(),
+                    recent_writes: writes.iter().map(WriteExport::from).collect(),
+                });
+            }
             println!("Active leases ({}):", leases.len());
             for l in &leases {
                 println!(
@@ -144,9 +255,25 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Attribute { path, db } => {
+        Command::Attribute { path, db, json } => {
             let store = Store::open(&db).await.context("opening store")?;
             let rows = store.attribute_path(&path).await?;
+            if json {
+                return print_json(&AttributeExport {
+                    schema: ATTRIBUTE_SCHEMA,
+                    path: &path,
+                    writes: rows
+                        .iter()
+                        .map(|(w, agent)| AttributionExport {
+                            written_at: w.written_at,
+                            agent_label: agent,
+                            bytes_written: w.bytes_written,
+                            content_hash: &w.content_hash,
+                            lease_id: &w.lease_id,
+                        })
+                        .collect(),
+                });
+            }
             if rows.is_empty() {
                 println!("No witnessed writes for path: {path}");
             } else {
