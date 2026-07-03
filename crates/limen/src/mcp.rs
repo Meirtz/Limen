@@ -4,8 +4,8 @@
 //! Logging goes to stderr (configured by the binary's tracing setup).
 //!
 //! Implements the minimum MCP surface: `initialize`, `tools/list`, `tools/call`,
-//! plus standard `notifications/initialized` (no-op). Three tools exposed:
-//! `limen_acquire`, `limen_write`, `limen_release`.
+//! plus standard `notifications/initialized` (no-op). Four tools exposed:
+//! `limen_acquire`, `limen_write`, `limen_release`, `limen_renew`.
 
 use crate::store::{Intent, Store, DEFAULT_LEASE_TTL_MS};
 use anyhow::Result;
