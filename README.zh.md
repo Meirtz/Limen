@@ -110,6 +110,7 @@ cd your-project && limen init            # 创建 .limen/ 并打印下面的 MCP
 
 ```bash
 limen audit --db .limen/state.db          # 活跃租约 + 最近的见证变更
+limen audit --db .limen/state.db --json   # 同样的事实，输出版本化 JSON（limen.audit/v1），供外部校验器使用
 limen attribute src/auth/login.rs         # 谁、何时、在哪张租约下改了它
 ```
 

@@ -110,6 +110,7 @@ Inspect what happened at any time:
 
 ```bash
 limen audit --db .limen/state.db          # active leases + recent witnessed changes
+limen audit --db .limen/state.db --json   # same facts as versioned JSON (limen.audit/v1) for external verifiers
 limen attribute src/auth/login.rs         # who changed this, when, under which lease
 ```
 
