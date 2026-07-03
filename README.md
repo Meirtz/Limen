@@ -10,7 +10,7 @@ Limen is a single small Rust daemon, exposed as an [MCP](https://modelcontextpro
 
 The model is general. A **lease** is time-bounded authority over a **region** of a **namespace**; a **witness** records every mediated change against an **identity**. None of it is bound to files — a namespace is any addressable space of mutable resources (a filesystem, a key-value store, a config tree, a set of cloud objects), and the agents can be coding, research, ops, or computer-use agents, or plain pipelines. Limen ports forty years of distributed-systems concurrency control — leases, advisory locking — into the [zero-trust-for-AI-agents](https://claude.com/blog/zero-trust-for-ai-agents) era.
 
-It ships today with one resource implemented — a **filesystem** — and one example that makes the problem vivid: several AI coding agents sharing a repository.
+It ships today with two resources implemented — a **filesystem** and a feature-gated **Redis KV** — and one example that makes the problem vivid: several AI coding agents sharing a repository.
 
 ---
 
@@ -97,7 +97,7 @@ cd your-project && limen init            # create .limen/ and print the MCP conf
 }
 ```
 
-That's it — Claude Code, Cursor, Codex, and any other MCP host can now call three tools (parameters shown for the filesystem resource):
+That's it — Claude Code, Cursor, Codex, and any other MCP host can now call four tools (parameters shown for the filesystem resource):
 
 | Tool | Inputs | Returns |
 | --- | --- | --- |
@@ -148,7 +148,7 @@ Limen's predecessor died of conceptual sprawl; staying small is the whole point.
 | | |
 | --- | --- |
 | ✅ **is** | an advisory lease manager + change mediator + witness, over MCP; agent-neutral and resource-pluggable; value scales with how many agents share the namespace |
-| 🚫 **is not (yet)** | mandatory enforcement (it's advisory — it issues and witnesses, it doesn't intercept); more than one resource backend; multi-machine; cryptographic identity |
+| 🚫 **is not (yet)** | mandatory enforcement (it's advisory — it issues and witnesses, it doesn't intercept); multi-machine; identity beyond opt-in acquire signing (lease IDs stay bearer tokens) |
 | ⛔ **is not (ever)** | an agent runtime / orchestrator / scheduler; a governance / policy / "law" layer; a model or harness competitor |
 
 It coordinates **shared state**; it does not orchestrate agents. The line: if a feature only makes sense once Limen is *in charge* of an agent, it's out of scope — Limen is never in charge.
@@ -200,7 +200,7 @@ Limen is **alpha** and honest about it.
 | Surface | Status |
 | --- | --- |
 | MVP (lease + write + release + audit, stdio MCP) | implemented |
-| resources | one (filesystem); the model is resource-pluggable |
+| resources | two (filesystem; Redis KV behind `--features redis`); the model is resource-pluggable |
 | enforcement | **advisory only** — agents can bypass; witness still attributes |
 | identity | plaintext by default; opt-in **ed25519** signed identity (`limen register` / `limen sign`) |
 | scope | single machine, single namespace |
