@@ -65,6 +65,13 @@ enum Command {
         #[arg(long, default_value = ".limen/state.db")]
         db: PathBuf,
     },
+    /// Verify the witness hash chain end-to-end and print its status. Every command
+    /// that opens the state db already verifies fail-closed; this makes the check —
+    /// and its result — explicit.
+    Verify {
+        #[arg(long, default_value = ".limen/state.db")]
+        db: PathBuf,
+    },
     /// Create the `.limen/` state directory and print MCP setup for your harnesses.
     Init {
         /// Workspace directory to initialize (defaults to the current directory).
@@ -142,6 +149,14 @@ async fn main() -> Result<()> {
                     lease = w.lease_id,
                 );
             }
+            // Opening the store already verified the chain fail-closed; re-walk to
+            // surface what the audit view rests on.
+            let chain = store.verify_witness_chain().await?;
+            let head_short = &chain.head_hash[..8.min(chain.head_hash.len())];
+            println!(
+                "\nWitness chain: intact ({} witnesses, head {head_short})",
+                chain.witnesses
+            );
             Ok(())
         }
         Command::Attribute { path, db } => {
@@ -163,6 +178,17 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            Ok(())
+        }
+        Command::Verify { db } => {
+            // `Store::open` verifies fail-closed, so a broken chain errors out here
+            // with the precise break; reaching the print means the walk passed.
+            let store = Store::open(&db).await.context("opening store")?;
+            let status = store.verify_witness_chain().await?;
+            println!(
+                "Witness chain intact: {} witnesses\n  head: {}",
+                status.witnesses, status.head_hash
+            );
             Ok(())
         }
         Command::Init { dir } => {

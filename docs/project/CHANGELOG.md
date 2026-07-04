@@ -40,6 +40,19 @@ Alpha changelog discipline: user-visible changes are recorded here before merge.
   `pilot` / `sweep` / `analyze` subcommands over any OpenAI-compatible endpoint (endpoint
   and credentials read from the environment — never committed).
 - `#![forbid(unsafe_code)]` across the workspace.
+- **tamper-evident witness chain**: every witness now carries `prev_hash` and
+  `witness_hash` — SHA-256 over its canonical facts (target, bytes, content hash,
+  time, lease, **and the attributed agent label**) chained to the previous witness —
+  with the chain tip pinned in a `witness_head` row so tail truncation is detectable.
+  Every `Store` open re-walks the chain and **fails closed** on any in-place edit,
+  deleted witness, or rewritten attribution; `limen verify` makes the check explicit
+  and `limen audit` surfaces the chain status; `limen_write` returns the
+  `witness_hash` receipt. Existing databases migrate transparently (pre-chain rows
+  are backfilled into the chain — integrity is attested from the migration onward,
+  not retroactively). Upgrades "witnessed = recorded" to "witnessed = tamper-evident"
+  against in-place edits and deletions; a full re-chain by someone with write access
+  to the db file remains out of reach of any single-file scheme — anchor the head
+  hash externally to detect that.
 - **second shipped `Resource`: a Redis-backed KV store** (`RedisKvResource`, behind the optional
   `redis` feature — the core stays dependency-lean by default). Regions are key prefixes; a mediated
   change `SET`s the key. Lets Limen coordinate concurrent agents over a shared Redis namespace (e.g.

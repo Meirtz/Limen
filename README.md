@@ -43,7 +43,7 @@ Nothing coordinates them, so every hazard above is concrete and reproducible —
 The mechanism is the same for any resource:
 
 1. **acquire** a lease over a region under an intent (`read` / `write` / `propose`) — or learn it conflicts with a lease someone already holds
-2. **write** within the lease — Limen checks the target lies inside the region, applies the change, and records a witness (bytes, content hash, time, agent)
+2. **write** within the lease — Limen checks the target lies inside the region, applies the change, and records a witness (bytes, content hash, time, agent), hash-chained to the witness before it
 3. **release** — the region frees for the next holder
 
 Conflicts are decided by region overlap: `write × write` and `write × read` conflict, `read × read` is fine, and `propose` never conflicts. Every lease carries a TTL and auto-expires, so a crashed agent can't deadlock the namespace.
@@ -111,7 +111,10 @@ Inspect what happened at any time:
 ```bash
 limen audit --db .limen/state.db          # active leases + recent witnessed changes
 limen attribute src/auth/login.rs         # who changed this, when, under which lease
+limen verify --db .limen/state.db         # walk the witness hash chain end-to-end
 ```
+
+Every witness is hash-chained (SHA-256 over its facts — including the attributed agent — plus the previous witness's hash), and every command that opens the state db re-walks the chain and **fails closed**: an in-place edit, a deleted witness, or a rewritten agent label is detected, not rendered as fact.
 
 **Optional — cryptographic identity.** Register an agent to upgrade its label from *asserted* to *ed25519-verified*:
 
@@ -135,7 +138,7 @@ Limen has a small, general vocabulary — each term backed by a real type in the
 | **identity** | who is requesting | plaintext label, or a registered **ed25519** key (`limen register`) the agent signs each acquire with |
 | **lease** | time-bounded authority over a region | intent + TTL (5 min) + state |
 | **intent** | what the holder means to do | `read` / `write` / `propose` |
-| **witness** | recorded evidence of a mediated change | target, bytes, SHA-256, time, agent |
+| **witness** | recorded evidence of a mediated change | target, bytes, SHA-256, time, agent — hash-chained to the previous witness, verified at every open |
 
 **Conflict rule** (overlapping regions): `write × write` conflicts · `write × read` conflicts (reader yields) · `read × read` is fine · `propose` never conflicts.
 
@@ -202,6 +205,7 @@ Limen is **alpha** and honest about it.
 | MVP (lease + write + release + audit, stdio MCP) | implemented |
 | resources | two (filesystem; Redis KV behind `--features redis`); the model is resource-pluggable |
 | enforcement | **advisory only** — agents can bypass; witness still attributes |
+| witness integrity | **hash-chained** (`prev_hash` → SHA-256 over the witness facts incl. the attributed agent), head pinned, verified fail-closed at every open and via `limen verify`; tamper-evident against in-place edits and deletions — **not** against wholesale re-chaining by someone with write access to the db file (anchor the head externally for that) |
 | identity | plaintext by default; opt-in **ed25519** signed identity (`limen register` / `limen sign`) |
 | scope | single machine, single namespace |
 | region matching | literal path / directory prefix (no globs yet) |

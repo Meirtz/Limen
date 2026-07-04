@@ -186,7 +186,7 @@ fn tools_list_response() -> Value {
             },
             {
                 "name": "limen_write",
-                "description": "Write file content under a held lease. The path must fall within the lease's path_pattern. Records the write to the audit log.",
+                "description": "Write file content under a held lease. The path must fall within the lease's path_pattern. Records the write to the hash-chained (tamper-evident) audit log.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -338,6 +338,7 @@ async fn tool_write(store: &Store, args: &Value) -> Result<Value, String> {
             "bytes_written": rec.bytes_written,
             "content_hash": rec.content_hash,
             "written_at": rec.written_at,
+            "witness_hash": rec.witness_hash,
         })),
         Err(e) => Err(e.to_string()),
     }
