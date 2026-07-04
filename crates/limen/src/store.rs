@@ -5,8 +5,15 @@
 //! overlap / is this target in-region / apply the change" to a [`Resource`]
 //! (see [`crate::resource`]). The filesystem is the one resource shipped today.
 //!
-//! Schema is two tables. `leases` tracks who holds which region for how long.
-//! `writes` is the witnessed audit of mediated changes. Both keyed by UUID.
+//! Schema is three tables. `leases` tracks who holds which region for how long.
+//! `writes` is the witnessed audit of mediated changes, **hash-chained**: each
+//! witness stores a SHA-256 over its canonical facts (including the attributed
+//! agent) and the previous witness's hash, and `witness_head` pins the chain tip
+//! so tail truncation is detectable. Every open re-walks the chain and fails
+//! closed ([`Store::verify_witness_chain`]), upgrading "witnessed = recorded" to
+//! "witnessed = tamper-evident" against in-place edits and deletions. The honest
+//! limit: an attacker with write access to the database file can re-chain it
+//! wholesale — anchor the head hash externally to detect that.
 
 use crate::resource::{Applied, FilesystemResource, Resource};
 use anyhow::Context;
@@ -19,6 +26,15 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const DEFAULT_LEASE_TTL_MS: i64 = 5 * 60 * 1000;
+
+/// The anchor the first witness chains from: 64 hex zeros (no predecessor).
+pub const WITNESS_CHAIN_GENESIS: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Version token bound into every witness hash. Renaming, removing, or changing the
+/// meaning of a hashed fact bumps this (`/v1` → `/v2`); the stored rows record which
+/// message they were hashed under implicitly by their column set.
+const WITNESS_MESSAGE_SCHEMA: &str = "limen.witness/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -84,6 +100,65 @@ pub struct WriteRecord {
     pub bytes_written: i64,
     pub content_hash: String,
     pub written_at: i64,
+    /// The previous witness's `witness_hash` ([`WITNESS_CHAIN_GENESIS`] for the first).
+    pub prev_hash: String,
+    /// SHA-256 over this witness's canonical facts (including the attributed agent
+    /// label) and `prev_hash` — the link the chain is made of.
+    pub witness_hash: String,
+}
+
+/// The verified state of the witness hash chain, as returned by
+/// [`Store::verify_witness_chain`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainStatus {
+    /// How many witnesses the chain covers.
+    pub witnesses: i64,
+    /// The chain tip: the newest witness's hash ([`WITNESS_CHAIN_GENESIS`] when empty).
+    pub head_hash: String,
+}
+
+/// The canonical facts a witness hash covers. `agent_label` is the attribution the
+/// witness exists to preserve — it lives on the owning lease, so hashing it here makes
+/// editing the lease's label as detectable as editing the witness row itself.
+struct WitnessFacts<'a> {
+    id: &'a str,
+    lease_id: &'a str,
+    agent_label: &'a str,
+    path: &'a str,
+    bytes_written: i64,
+    content_hash: &'a str,
+    written_at: i64,
+}
+
+/// SHA-256 of the canonical witness message: a fixed-field JSON object (deterministic
+/// for a fixed struct — declaration order, minimal escaping) so facts containing
+/// newlines or separators cannot forge frame boundaries.
+fn chained_witness_hash(facts: &WitnessFacts<'_>, prev_hash: &str) -> String {
+    #[derive(Serialize)]
+    struct Message<'a> {
+        schema: &'static str,
+        id: &'a str,
+        lease_id: &'a str,
+        agent_label: &'a str,
+        path: &'a str,
+        bytes_written: i64,
+        content_hash: &'a str,
+        written_at: i64,
+        prev_hash: &'a str,
+    }
+    let message = Message {
+        schema: WITNESS_MESSAGE_SCHEMA,
+        id: facts.id,
+        lease_id: facts.lease_id,
+        agent_label: facts.agent_label,
+        path: facts.path,
+        bytes_written: facts.bytes_written,
+        content_hash: facts.content_hash,
+        written_at: facts.written_at,
+        prev_hash,
+    };
+    let bytes = serde_json::to_vec(&message).expect("witness message serializes");
+    crate::resource::hex_sha256(&bytes)
 }
 
 #[derive(Debug, Error)]
@@ -135,6 +210,9 @@ pub enum StoreError {
     #[error("corrupt row: {0}")]
     Corrupt(String),
 
+    #[error("witness chain broken: {0}")]
+    WitnessChainBroken(String),
+
     #[error("resource error: {0}")]
     Resource(String),
 
@@ -177,6 +255,7 @@ impl Store {
             .with_context(|| format!("opening db {}", db_path.display()))?;
         let store = Self { pool, resource };
         store.init_schema().await?;
+        store.verify_on_open().await?;
         Ok(store)
     }
 
@@ -196,12 +275,114 @@ impl Store {
             .await?;
         let store = Self { pool, resource };
         store.init_schema().await?;
+        store.verify_on_open().await?;
         Ok(store)
     }
 
     async fn init_schema(&self) -> anyhow::Result<()> {
         for stmt in SCHEMA_STATEMENTS {
             sqlx::query(stmt).execute(&self.pool).await?;
+        }
+        // A fresh (or pre-chain) database starts with an empty chain at genesis; a
+        // database that already chained keeps its head (INSERT OR IGNORE).
+        sqlx::query(
+            "INSERT OR IGNORE INTO witness_head (id, head_hash, chain_len) VALUES (1, ?1, 0)",
+        )
+        .bind(WITNESS_CHAIN_GENESIS)
+        .execute(&self.pool)
+        .await?;
+        self.migrate_pre_chain_writes()
+            .await
+            .context("migrating pre-chain witness rows")?;
+        Ok(())
+    }
+
+    /// Fail closed at open: refuse to serve (and to append witnesses to) an audit
+    /// trail whose chain no longer verifies.
+    async fn verify_on_open(&self) -> anyhow::Result<()> {
+        self.verify_witness_chain().await.context(
+            "the witness trail failed verification at open; \
+             inspect it with `limen verify`, or move the state db aside \
+             (keeping it as evidence) to start a fresh trail",
+        )?;
+        Ok(())
+    }
+
+    /// One-time, transparent migration of a pre-chain `writes` table: add the chain
+    /// columns and backfill the chain in insertion order. The chain attests integrity
+    /// **from this migration onward** — it cannot retroactively prove the pre-chain
+    /// rows were never altered before it ran.
+    async fn migrate_pre_chain_writes(&self) -> Result<(), StoreError> {
+        let columns = sqlx::query("PRAGMA table_info(writes)")
+            .fetch_all(&self.pool)
+            .await?;
+        let has_chain = columns.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .map(|name| name == "witness_hash")
+                .unwrap_or(false)
+        });
+        if has_chain {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("ALTER TABLE writes ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE writes ADD COLUMN witness_hash TEXT NOT NULL DEFAULT ''")
+            .execute(&mut *tx)
+            .await?;
+        let rows = sqlx::query(
+            "SELECT w.rowid AS rid, w.id, w.lease_id, w.path, w.bytes_written, w.content_hash, \
+             w.written_at, l.agent_label \
+             FROM writes w LEFT JOIN leases l ON w.lease_id = l.id ORDER BY w.rowid ASC",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut prev = WITNESS_CHAIN_GENESIS.to_string();
+        let mut chained: i64 = 0;
+        for row in &rows {
+            let id: String = row.try_get("id")?;
+            let agent_label: Option<String> = row.try_get("agent_label")?;
+            let Some(agent_label) = agent_label else {
+                return Err(StoreError::WitnessChainBroken(format!(
+                    "write {id} references a missing lease; refusing to chain an \
+                     unattributable witness"
+                )));
+            };
+            let facts = WitnessFacts {
+                id: &id,
+                lease_id: &row.try_get::<String, _>("lease_id")?,
+                agent_label: &agent_label,
+                path: &row.try_get::<String, _>("path")?,
+                bytes_written: row.try_get("bytes_written")?,
+                content_hash: &row.try_get::<String, _>("content_hash")?,
+                written_at: row.try_get("written_at")?,
+            };
+            let hash = chained_witness_hash(&facts, &prev);
+            sqlx::query("UPDATE writes SET prev_hash = ?1, witness_hash = ?2 WHERE rowid = ?3")
+                .bind(&prev)
+                .bind(&hash)
+                .bind(row.try_get::<i64, _>("rid")?)
+                .execute(&mut *tx)
+                .await?;
+            prev = hash;
+            chained += 1;
+        }
+        sqlx::query(
+            "INSERT INTO witness_head (id, head_hash, chain_len) VALUES (1, ?1, ?2) \
+             ON CONFLICT(id) DO UPDATE SET head_hash = ?1, chain_len = ?2",
+        )
+        .bind(&prev)
+        .bind(chained)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        if chained > 0 {
+            tracing::info!(
+                witnesses = chained,
+                "backfilled witness hash chain over pre-chain rows"
+            );
         }
         Ok(())
     }
@@ -382,10 +563,28 @@ impl Store {
             content_hash,
         } = self.resource.apply(target, content)?;
 
+        // Chain the witness to the current head and advance the head, atomically:
+        // a concurrent writer racing this transaction errors (SQLite serializes
+        // writers) rather than forking the chain.
         let id = Uuid::new_v4().to_string();
+        let facts = WitnessFacts {
+            id: &id,
+            lease_id,
+            agent_label: &lease.agent_label,
+            path: target,
+            bytes_written: bytes,
+            content_hash: &content_hash,
+            written_at: now,
+        };
+        let mut tx = self.pool.begin().await?;
+        let prev_hash: String = sqlx::query("SELECT head_hash FROM witness_head WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get("head_hash")?;
+        let witness_hash = chained_witness_hash(&facts, &prev_hash);
         sqlx::query(
-            "INSERT INTO writes (id, lease_id, path, bytes_written, content_hash, written_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO writes (id, lease_id, path, bytes_written, content_hash, written_at, \
+             prev_hash, witness_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind(&id)
         .bind(lease_id)
@@ -393,8 +592,17 @@ impl Store {
         .bind(bytes)
         .bind(&content_hash)
         .bind(now)
-        .execute(&self.pool)
+        .bind(&prev_hash)
+        .bind(&witness_hash)
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "UPDATE witness_head SET head_hash = ?1, chain_len = chain_len + 1 WHERE id = 1",
+        )
+        .bind(&witness_hash)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
 
         Ok(WriteRecord {
             id,
@@ -403,6 +611,78 @@ impl Store {
             bytes_written: bytes,
             content_hash,
             written_at: now,
+            prev_hash,
+            witness_hash,
+        })
+    }
+
+    /// Re-walk the entire witness chain from genesis: every witness's facts (including
+    /// the attributed agent label on its owning lease) must recompute to its stored
+    /// `witness_hash`, each link must reference the one before it, and the stored head
+    /// must match the walked tip — so in-place edits, interior deletions, and tail
+    /// truncation are all detected. Runs at every open (fail closed) and behind
+    /// `limen verify`. O(chain length); a workspace audit db is small.
+    pub async fn verify_witness_chain(&self) -> Result<ChainStatus, StoreError> {
+        let rows = sqlx::query(
+            "SELECT w.id, w.lease_id, w.path, w.bytes_written, w.content_hash, w.written_at, \
+             w.prev_hash, w.witness_hash, l.agent_label \
+             FROM writes w LEFT JOIN leases l ON w.lease_id = l.id ORDER BY w.rowid ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut prev = WITNESS_CHAIN_GENESIS.to_string();
+        let mut walked: i64 = 0;
+        for row in &rows {
+            let id: String = row.try_get("id")?;
+            let agent_label: Option<String> = row.try_get("agent_label")?;
+            let Some(agent_label) = agent_label else {
+                return Err(StoreError::WitnessChainBroken(format!(
+                    "witness {id} references a missing lease"
+                )));
+            };
+            let stored_prev: String = row.try_get("prev_hash")?;
+            if stored_prev != prev {
+                return Err(StoreError::WitnessChainBroken(format!(
+                    "witness {id} does not link to the preceding witness \
+                     (a witness may have been removed or reordered)"
+                )));
+            }
+            let facts = WitnessFacts {
+                id: &id,
+                lease_id: &row.try_get::<String, _>("lease_id")?,
+                agent_label: &agent_label,
+                path: &row.try_get::<String, _>("path")?,
+                bytes_written: row.try_get("bytes_written")?,
+                content_hash: &row.try_get::<String, _>("content_hash")?,
+                written_at: row.try_get("written_at")?,
+            };
+            let stored_hash: String = row.try_get("witness_hash")?;
+            if chained_witness_hash(&facts, &prev) != stored_hash {
+                return Err(StoreError::WitnessChainBroken(format!(
+                    "witness {id}: recorded facts do not match its witness_hash \
+                     (the row or its lease's agent_label was altered)"
+                )));
+            }
+            prev = stored_hash;
+            walked += 1;
+        }
+        let head = sqlx::query("SELECT head_hash, chain_len FROM witness_head WHERE id = 1")
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                StoreError::WitnessChainBroken("the witness_head row is missing".to_string())
+            })?;
+        let head_hash: String = head.try_get("head_hash")?;
+        let chain_len: i64 = head.try_get("chain_len")?;
+        if head_hash != prev || chain_len != walked {
+            return Err(StoreError::WitnessChainBroken(format!(
+                "stored head does not match the walked chain (walked {walked} witnesses, \
+                 head records {chain_len}); the newest witnesses may have been removed"
+            )));
+        }
+        Ok(ChainStatus {
+            witnesses: walked,
+            head_hash,
         })
     }
 
@@ -458,7 +738,8 @@ impl Store {
 
     pub async fn list_recent_writes(&self, limit: i64) -> Result<Vec<WriteRecord>, StoreError> {
         let rows = sqlx::query(
-            "SELECT id, lease_id, path, bytes_written, content_hash, written_at \
+            "SELECT id, lease_id, path, bytes_written, content_hash, written_at, \
+             prev_hash, witness_hash \
              FROM writes ORDER BY written_at DESC, rowid DESC LIMIT ?1",
         )
         .bind(limit)
@@ -474,7 +755,8 @@ impl Store {
         target: &str,
     ) -> Result<Vec<(WriteRecord, String)>, StoreError> {
         let rows = sqlx::query(
-            "SELECT w.id, w.lease_id, w.path, w.bytes_written, w.content_hash, w.written_at, l.agent_label \
+            "SELECT w.id, w.lease_id, w.path, w.bytes_written, w.content_hash, w.written_at, \
+             w.prev_hash, w.witness_hash, l.agent_label \
              FROM writes w JOIN leases l ON w.lease_id = l.id WHERE w.path = ?1 ORDER BY w.written_at DESC, w.rowid DESC",
         )
         .bind(target)
@@ -573,6 +855,8 @@ fn row_to_write(row: &SqliteRow) -> Result<WriteRecord, StoreError> {
         bytes_written: row.try_get("bytes_written")?,
         content_hash: row.try_get("content_hash")?,
         written_at: row.try_get("written_at")?,
+        prev_hash: row.try_get("prev_hash")?,
+        witness_hash: row.try_get("witness_hash")?,
     })
 }
 
@@ -607,9 +891,16 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         bytes_written INTEGER NOT NULL,
         content_hash  TEXT NOT NULL,
         written_at    INTEGER NOT NULL,
+        prev_hash     TEXT NOT NULL,
+        witness_hash  TEXT NOT NULL,
         FOREIGN KEY(lease_id) REFERENCES leases(id)
     )"#,
     r#"CREATE INDEX IF NOT EXISTS idx_writes_path ON writes(path)"#,
+    r#"CREATE TABLE IF NOT EXISTS witness_head (
+        id        INTEGER PRIMARY KEY CHECK (id = 1),
+        head_hash TEXT NOT NULL,
+        chain_len INTEGER NOT NULL
+    )"#,
     r#"CREATE TABLE IF NOT EXISTS agents (
         label         TEXT PRIMARY KEY,
         public_key    TEXT NOT NULL,
