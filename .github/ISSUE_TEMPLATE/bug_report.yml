@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in the Limen daemon, CLI, or docs.
+description: Report a defect in the Limen library, CLI, or docs.
 title: "[bug] "
 labels: ["bug"]
 body:
@@ -25,11 +25,11 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, Rust version, branch or commit, and any relevant runtime context.
+      description: OS, Python version, Limen version (limen --version), and how you installed it.
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
       label: Logs and output
-      description: Paste relevant logs, inspect output, or screenshots.
+      description: Paste the relevant output of limen check -v or limen compare -v.

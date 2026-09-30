@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Describe the user problem first. For public-surface changes, explain how they affect CLI, config, API, or examples.
+        Describe the user problem first. If it is a new check, describe the validity failure it would catch and a real case where it happened.
   - type: textarea
     id: problem
     attributes:

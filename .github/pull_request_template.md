@@ -1,31 +1,10 @@
 ## Summary
 
-- what changed
-- why it changed
+- what changed and why
 
 ## Validation
 
-- [ ] `cargo fmt --all`
-- [ ] `cargo test --workspace`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] No credentials, provider endpoints, or model identifiers in tracked files
-
-## Public Surface Review
-
-- [ ] No public-surface change
-- [ ] CLI changed
-- [ ] Config or manifests changed
-- [ ] Local UDS API changed
-- [ ] Rust crate API changed
-
-## Documentation
-
-- [ ] Not user-visible
-- [ ] Updated README or specs for user-visible behavior
-- [ ] Updated `docs/project/CHANGELOG.md`
-- [ ] Added migration note for breaking alpha change
-
-## Example Contract
-
-- [ ] Not applicable
-- [ ] Updated `examples/hero-swarm/` and matching docs in the same PR
+- [ ] `ruff format --check`, `ruff check`, `mypy`, `pytest` are clean
+- [ ] new behavior is covered by a test
+- [ ] if a check changed: a bench scenario shows it, and the README results were re-run
+- [ ] `CHANGELOG.md` updated for user-visible changes
