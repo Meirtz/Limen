@@ -17,17 +17,20 @@ lists the child processes and native readers it saw, so these gaps are visible.
 from __future__ import annotations
 
 import datetime as _dt
+import getpass
 import hashlib
 import importlib.machinery
 import importlib.util
 import numbers
 import os
 import platform
+import re
 import shutil
 import site
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import threading
 import time
 from collections import deque
@@ -72,6 +75,73 @@ NATIVE_READERS = (
     "tables",
 )
 _MTIME_SLACK_NS = 10_000_000
+_CREDENTIAL_NAME = re.compile(
+    r"(^|/)(\.env(\.[\w-]+)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|"
+    r"[^/]*credentials[^/]*|[^/]*\.pem|[^/]*\.key|\.npmrc|\.pypirc)$"
+)
+
+
+def _cache_dirs() -> list[str]:
+    """Compiler and JIT caches: generated code and artifacts, not experiment inputs."""
+    home = os.path.expanduser("~")
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "user"
+    env = raw_environ()
+    dirs = {
+        env.get("TORCHINDUCTOR_CACHE_DIR") or os.path.join(tempfile.gettempdir(), f"torchinductor_{user}"),
+        env.get("TRITON_CACHE_DIR") or os.path.join(home, ".triton"),
+        env.get("TORCH_EXTENSIONS_DIR") or os.path.join(home, ".cache", "torch_extensions"),
+        env.get("CUDA_CACHE_PATH") or os.path.join(home, ".nv", "ComputeCache"),
+        os.path.join(home, ".cache", "torch", "inductor"),
+        os.path.join(home, ".cache", "torch", "kernels"),
+    }
+    return _both(dirs)
+
+
+def _credential_path(path: str) -> bool:
+    home = os.path.expanduser("~")
+    if any(
+        path.startswith(os.path.join(home, d) + os.sep)
+        for d in (".ssh", ".aws", ".gnupg", os.path.join(".config", "gcloud"))
+    ):
+        return True
+    return bool(_CREDENTIAL_NAME.search(path))
+
+
+def _process_start_ns() -> int | None:
+    """When this process started (to tell whether a loaded module's file was edited since)."""
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/self/stat") as f:
+                ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+            with open("/proc/stat") as f:
+                btime = next(int(line.split()[1]) for line in f if line.startswith("btime"))
+            return int((btime + ticks / os.sysconf("SC_CLK_TCK")) * 1e9)
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True, text=True, timeout=5)
+        return int(time.mktime(time.strptime(out.stdout.strip(), "%a %b %d %H:%M:%S %Y")) * 1e9)
+    except Exception:
+        return None
+
+
+def _pyc_is_stale(module: Any, source: str) -> bool:
+    """Was the module compiled from a different version of ``source`` than the one on disk now?"""
+    cached = getattr(module, "__cached__", None)
+    if not isinstance(cached, str):
+        return False
+    try:
+        with open(cached, "rb") as f:
+            header = f.read(16)
+        st = os.stat(source)
+    except OSError:
+        return False
+    if len(header) < 16 or int.from_bytes(header[4:8], "little") != 0:  # hash-based pycs: not checked
+        return False
+    mtime = int.from_bytes(header[8:12], "little")
+    size = int.from_bytes(header[12:16], "little")
+    return mtime != (int(st.st_mtime) & 0xFFFFFFFF) or size != (st.st_size & 0xFFFFFFFF)
+
 
 _active: Recorder | None = None
 _local = threading.local()
@@ -156,6 +226,8 @@ def identity_token(ident: dict[str, Any] | None) -> str:
         return "<missing>"
     if ident.get("sha256"):
         return str(ident["sha256"])
+    if ident.get("digest"):
+        return str(ident["digest"])
     if ident.get("stat"):
         return f"stat:{ident['stat']}"
     return "<missing>"
@@ -215,58 +287,88 @@ class _Git:
 # ---- environment -------------------------------------------------------------------------------
 
 
+_ENVIRON: Any = None  # the os.environ object being observed (copies of it are not)
+_scans: dict[int, dict[str, Any]] = {}  # open key scans per thread
+_scans_lock = threading.Lock()
+# libraries whose bulk reads of os.environ are how a project reads its configuration
+CONFIG_LOADERS = (
+    "pydantic_settings",
+    "pydantic.env_settings",
+    "environs",
+    "decouple",
+    "dynaconf",
+    "dotenv",
+    "omegaconf",
+    "hydra",
+    "configargparse",
+    "jsonargparse",
+    "simple_parsing",
+    "typed_settings",
+    "confuse",
+    "everett",
+)
+
+
 def _note(key: object, value: str | None) -> None:
     rec = active()
     if rec is not None and isinstance(key, str) and not _busy():
         rec._on_env_read(key, value)
 
 
-def _end_scan(bulk: bool) -> None:
-    """Close an ``os.environ`` key scan. If every key was read back in order it was a bulk copy
-    (``dict(os.environ)``, ``.items()``); otherwise the values it read were ordinary reads."""
-    provisional = getattr(_local, "provisional", None)
-    scan_by = getattr(_local, "scan_by", None)
-    _local.pending = _local.provisional = _local.scan_by = None
+def _end_scan(bulk: bool, tid: int | None = None) -> None:
+    """Close a thread's ``os.environ`` key scan. If every key was read back in order it was a bulk
+    copy (``dict(os.environ)``, ``.items()``); otherwise the values it read were ordinary reads."""
+    with _scans_lock:
+        scan = _scans.pop(threading.get_ident() if tid is None else tid, None)
     rec = active()
-    if rec is None or _busy():
+    if scan is None or rec is None:
         return
     if bulk:
-        rec._on_env_bulk(scan_by)
+        rec._on_env_bulk(scan["by"], scan["provisional"])
     else:
-        for key, value in provisional or []:
+        for key, value in scan["provisional"]:
             rec._on_env_read(key, value)
 
 
-def _caller_module() -> str:
+def flush_scans() -> None:
+    """Scans still open when the run ends (in any thread) read ordinary values."""
+    for tid in list(_scans):
+        _end_scan(False, tid)
+
+
+def _caller() -> tuple[str, str]:
     frame: FrameType | None = sys._getframe(2)
     while frame is not None:
         name = str(frame.f_globals.get("__name__", ""))
-        if name not in ("os", "_collections_abc", "collections.abc", __name__):
-            return name
+        if name not in ("os", "_collections_abc", "collections.abc", "copy", __name__):
+            return name, frame.f_code.co_filename
         frame = frame.f_back
-    return "?"
+    return "?", ""
 
 
 class _TrackedEnviron(os._Environ):  # type: ignore[type-arg]
     """``os._Environ`` that tells the active recorder which variables were read or set.
 
     Installed by swapping the class of the existing ``os.environ`` object, so references taken
-    before recording started (``from os import environ``) are observed too.
+    before recording started (``from os import environ``) are observed too. Copies are not.
     """
 
     def __getitem__(self, key: str) -> str:
-        pending = getattr(_local, "pending", None)
-        if pending is not None:
+        if self is not _ENVIRON or _busy():
+            return str(super().__getitem__(key))
+        scan = _scans.get(threading.get_ident())
+        if scan is not None:
+            pending = scan["pending"]
             if pending and pending[0] == key:  # maybe a bulk copy replaying every key in order
                 pending.popleft()
-                value: str = super().__getitem__(key)
-                _local.provisional.append((key, value))
+                value = str(super().__getitem__(key))
+                scan["provisional"].append((key, value))
                 if not pending:
                     _end_scan(bulk=True)
                 return value
             _end_scan(bulk=False)
         try:
-            value = super().__getitem__(key)
+            value = str(super().__getitem__(key))
         except KeyError:
             _note(key, None)
             raise
@@ -275,32 +377,43 @@ class _TrackedEnviron(os._Environ):  # type: ignore[type-arg]
 
     def __setitem__(self, key: str, value: str) -> None:
         rec = active()
-        if rec is not None and not _busy():
+        if self is _ENVIRON and rec is not None and not _busy():
             rec._on_env_set(key)
         super().__setitem__(key, value)
 
     def __delitem__(self, key: str) -> None:
         rec = active()
-        if rec is not None and not _busy():
+        if self is _ENVIRON and rec is not None and not _busy():
             rec._on_env_set(key)
         super().__delitem__(key)
 
     def __iter__(self) -> Iterator[str]:
-        if getattr(_local, "pending", None) is not None:
-            _end_scan(bulk=False)
         keys = list(super().__iter__())
-        if active() is not None and not _busy():
-            _local.pending = deque(keys)
-            _local.provisional = []
-            _local.scan_by = _caller_module()
+        if self is _ENVIRON and not _busy() and active() is not None:
+            tid = threading.get_ident()
+            if tid in _scans:
+                _end_scan(bulk=False)
+            with _scans_lock:
+                _scans[tid] = {"pending": deque(keys), "provisional": [], "by": _caller()}
         return iter(keys)
 
 
+def raw_environ() -> dict[str, str]:
+    """The process environment, read without being observed."""
+    env = os.environ
+    data = getattr(env, "_data", None)
+    if isinstance(env, os._Environ) and isinstance(data, dict):
+        return {str(env.decodekey(k)): str(env.decodevalue(v)) for k, v in data.items()}
+    with _internal():
+        return dict(env)
+
+
 def _install_env_tracking() -> bool:
-    if type(os.environ) is _TrackedEnviron:
-        return True
+    global _ENVIRON
     if type(os.environ) is os._Environ:
         os.environ.__class__ = _TrackedEnviron
+    if type(os.environ) is _TrackedEnviron:
+        _ENVIRON = os.environ
         return True
     return False  # os.environ was replaced by something else: environment reads are not observed
 
@@ -346,7 +459,10 @@ def _jsonable(value: Any, depth: int = 0) -> Any:
         return {k if isinstance(k, str) else str(k): _jsonable(v, depth + 1) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(v, depth + 1) for v in value]
-    return str(value)
+    try:
+        return str(value)
+    except Exception:
+        return f"<unrepresentable {type(value).__name__}>"
 
 
 # ---- audit events ------------------------------------------------------------------------------
@@ -447,10 +563,17 @@ def _ev_sqlite(rec: Recorder, args: tuple[Any, ...]) -> None:
         name = os.fsdecode(db) if db is not None and not isinstance(db, int) else ""
     except (TypeError, ValueError):
         return
+    readonly = False
     if name.startswith("file:"):
-        name = name[5:].split("?", 1)[0]
-    if name and name != ":memory:":
-        rec._on_open(os.path.abspath(name), writes=False, reads=True)
+        name, _, query = name[5:].partition("?")
+        readonly = "mode=ro" in query or "immutable=1" in query
+    if not name or name == ":memory:":
+        return
+    path = os.path.abspath(name)
+    if not os.path.exists(path):
+        rec._on_created(path)
+    else:
+        rec._on_open(path, writes=not readonly, reads=True)
 
 
 def _ev_popen(rec: Recorder, args: tuple[Any, ...]) -> None:
@@ -636,10 +759,14 @@ class Recorder:
         self.env_set: set[str] = set()
         self.env_bulk_read = False
         self.env_bulk_by: set[str] = set()
+        self.env_bulk: dict[str, str] = {}
+        self.env_bulk_libraries: set[str] = set()
         self.declared_env: dict[str, dict[str, Any]] = {}
         self.files_read: dict[str, dict[str, Any]] = {}
         self.files_written: set[str] = set()
         self.code_seen: dict[str, dict[str, Any]] = {}
+        self.stale_before_run: set[str] = set()
+        self.edited_before_run: set[str] = set()
         self.main_ident: dict[str, Any] | None = None
         self.heads: dict[str, str | None] = {}
         self.git_at_start: dict[str, dict[str, Any]] = {}
@@ -649,8 +776,10 @@ class Recorder:
         self.outcomes: dict[str, dict[str, Any]] = {}
         self.duplicate_outcomes = 0
         self.gates: dict[str, dict[str, Any]] = {}
+        self._cache_dirs = _cache_dirs()
         self._excluded = [
             *_interpreter_dirs(config.root),
+            *self._cache_dirs,
             str(config.store),
             os.path.realpath(config.store),
             _LIMEN_DIR,
@@ -658,6 +787,7 @@ class Recorder:
             "/proc",
             "/sys",
         ]
+        self.signals_received: list[str] = []
         self.finished = False
 
     # ---- lifecycle ------------------------------------------------------------------------------
@@ -682,6 +812,7 @@ class Recorder:
                     status = git._run("-C", top, "status", "--porcelain", "--untracked-files=no")
                     self.git_at_start[top] = {"head": self.heads[top], "dirty": bool((status or "").strip())}
             self._snapshot_declared_env()
+            self._baseline_loaded_modules()
             _active = self
             self.store.save(self._record(status="running"))
         return self
@@ -699,8 +830,7 @@ class Recorder:
         self.finished = True
         if os.getpid() != self.pid:  # a forked child must never overwrite its parent's record
             return {}
-        if getattr(_local, "pending", None) is not None:
-            _end_scan(bulk=False)
+        flush_scans()
         if _active is self:
             _active = None
         with _internal():
@@ -724,15 +854,48 @@ class Recorder:
         with self.lock:
             self.env_set.add(name)
 
-    def _on_env_bulk(self, by: str | None) -> None:
+    def _on_env_bulk(self, by: tuple[str, str], values: list[tuple[str, str]]) -> None:
+        """A bulk copy of the environment. It counts as a possible read of any variable only when
+        project code or a configuration loader made it; library scans (tqdm) are just noted."""
+        module, filename = by
+        project = module == "__main__" or (bool(filename) and self.config.in_source_roots(filename))
+        loader = module.startswith(CONFIG_LOADERS)
         with self.lock:
+            if not (project or loader):
+                self.env_bulk_libraries.add(module)
+                return
             self.env_bulk_read = True
-            if by:
-                self.env_bulk_by.add(by)
+            self.env_bulk_by.add(module)
+            for k, v in values:
+                self.env_bulk.setdefault(k, redact.digest(self._key, v))
+
+    def _baseline_loaded_modules(self) -> None:
+        """Project modules imported before the run started: remember their bytes now, and note any
+        whose source changed after they were compiled (the loaded code is not what is on disk) or,
+        when no bytecode cache tells, after this process started."""
+        process_start: int | None = None
+        for mod in list(sys.modules.values()):
+            path = getattr(mod, "__file__", None)
+            if not isinstance(path, str) or not path.endswith(".py") or not os.path.isfile(path):
+                continue
+            if self._excluded_path(path) or not self.config.in_source_roots(os.path.realpath(path)):
+                continue
+            if path not in self.code_seen:
+                ident = file_identity(path, self.config.max_hash_bytes, git_blob=True)
+                if ident is not None:
+                    self.code_seen[path] = ident
+            if _pyc_is_stale(mod, path):
+                self.stale_before_run.add(path)
+                continue
+            if process_start is None:
+                process_start = _process_start_ns() or -1
+            mtime = self.code_seen.get(path, {}).get("mtime_ns", 0)
+            if process_start > 0 and mtime >= process_start:
+                self.edited_before_run.add(path)
 
     def _snapshot_declared_env(self) -> None:
         """The values the declared env treatments had when the run started, read or not."""
-        raw = dict(os.environ.items()) if not self.env_tracked else dict(os._Environ.items(os.environ))
+        raw = raw_environ()
         for spec in self.declared["treatment"]:
             if not spec.startswith("env:"):
                 continue
@@ -754,6 +917,8 @@ class Recorder:
                     self.files_written.add(path)
                 return
         ident = file_identity(path, self.config.max_hash_bytes)  # content before any write
+        if ident is not None and ident.get("sha256") and _credential_path(path):
+            ident["digest"] = redact.digest(self._key, ident.pop("sha256"))
         with self.lock:
             if ident is not None and path not in self.files_read:
                 if path in self.files_written:
@@ -837,8 +1002,11 @@ class Recorder:
             self.metrics[str(name)] = _jsonable(value)
 
     def param(self, name: str, value: Any) -> None:
+        v = _jsonable(value)
+        if isinstance(v, str) and redact.is_secret(str(name), v):
+            v = redact.digest(self._key, v)
         with self.lock:
-            self.params[str(name)] = _jsonable(value)
+            self.params[str(name)] = v
 
     def declare(self, **fields: Any) -> None:
         with self.lock:
@@ -884,12 +1052,16 @@ class Recorder:
                     **self.declared,
                     "treatment": list(self.declared["treatment"]),
                     "gates": list(self.declared["gates"]),
-                    "protocol": dict(self.declared["protocol"]),
+                    "protocol": {
+                        k: redact.digest(self._key, v) if isinstance(v, str) and redact.is_secret(k, v) else v
+                        for k, v in self.declared["protocol"].items()
+                    },
                 },
                 "status": status,
                 "exit_code": exit_code,
                 "exception": redact.text(self._key, exception) if exception else None,
                 "signal": signal_name,
+                "signals_received": list(self.signals_received),
                 "pid": self.pid,
                 "started_at": _dt.datetime.fromtimestamp(self.started, _dt.timezone.utc).isoformat(
                     timespec="milliseconds"
@@ -916,6 +1088,41 @@ class Recorder:
                 },
             }
 
+    def _modified_since_read(self, path: str, ident: dict[str, Any]) -> bool:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return False
+        return st.st_mtime_ns != ident.get("mtime_ns") or st.st_size != ident.get("size")
+
+    def _recent_files_in_output_dirs(self, limit: int = 5000) -> set[str]:
+        """Files written during the run under directories named on the command line or by
+        parameters, even by native writers Limen cannot see (torch.save, Arrow)."""
+        cwd = os.getcwd()
+        values = [*self.argv[1:], *(v for v in self.params.values() if isinstance(v, str))]
+        values += [e["value"] for e in self.env_reads.values() if isinstance(e.get("value"), str)]
+        found: set[str] = set()
+        seen = 0
+        for value in values:
+            for part in value.split("=")[-1:]:
+                d = os.path.abspath(os.path.join(cwd, part))
+                if not os.path.isdir(d) or self._excluded_path(d) or d in (cwd, str(self.config.root)):
+                    continue
+                if not (self.config.in_source_roots(d) or d.startswith(cwd + os.sep)):
+                    continue
+                for dirpath, _dirs, files in os.walk(d):
+                    for f in files:
+                        seen += 1
+                        if seen > limit:
+                            return found
+                        fp = os.path.join(dirpath, f)
+                        try:
+                            if os.stat(fp).st_mtime_ns >= self.started_ns - _MTIME_SLACK_NS:
+                                found.add(fp)
+                        except OSError:
+                            pass
+        return found
+
     def _code_entry(self, path: str, git: _Git, origin: str) -> dict[str, Any]:
         """Identity of code as it was loaded, and whether the file changed while the run was going."""
         loaded = self.code_seen.get(path) if path != self.main else self.main_ident
@@ -923,11 +1130,14 @@ class Recorder:
         ident = loaded or now
         entry: dict[str, Any] = {"path": path, "origin": origin, "sha256": ident.get("sha256")}
         if loaded is not None:
-            changed = now.get("sha256") != loaded.get("sha256") or now.get("stat") != loaded.get("stat")
-        else:
-            changed = now.get("mtime_ns", 0) >= self.started_ns - _MTIME_SLACK_NS
-        if changed:
-            entry["changed_during_run"] = True
+            if now.get("sha256") != loaded.get("sha256") or now.get("stat") != loaded.get("stat"):
+                entry["changed_during_run"] = True
+        elif now.get("mtime_ns", 0) >= self.started_ns - _MTIME_SLACK_NS:
+            entry["generated_during_run"] = True  # created during the run and loaded without an open event
+        if path in self.stale_before_run:
+            entry["changed_before_run"] = True
+        elif path in self.edited_before_run:
+            entry["edited_before_run"] = True
         if origin == "project":
             entry["git"] = git.status_of(path, ident.get("git_blob"))
         if not loaded and ident.get("sha256"):
@@ -940,6 +1150,7 @@ class Recorder:
         site_dirs, stdlib_dirs = _site_dirs(), _stdlib_dirs()
 
         modules: dict[str, dict[str, Any]] = {}
+        generated: list[str] = []
         module_files: set[str] = set()
         top_dists: dict[str, str] = {}
         imported_tops: set[str] = set()
@@ -964,7 +1175,13 @@ class Recorder:
                 continue
             if _under(real, stdlib_dirs) or _under(path, stdlib_dirs):
                 continue
+            if _under(real, self._cache_dirs) or _under(path, self._cache_dirs):
+                generated.append(name)  # compiler/JIT output (torch.compile, triton, cpp extensions)
+                continue
             entry = self._code_entry(path, git, "project" if cfg.in_source_roots(real) else "external")
+            if entry.get("generated_during_run"):
+                generated.append(name)
+                continue
             if top in _STDLIB_NAMES:
                 entry["shadows_stdlib"] = True
             modules[name] = entry
@@ -1009,29 +1226,37 @@ class Recorder:
         native = sorted(m for m in NATIVE_READERS if m in sys.modules)
 
         with self.lock:
-            written: dict[str, dict[str, Any]] = {}
-            for p in sorted(self.files_written):
-                if p not in module_files:
-                    written[p] = file_identity(p, cfg.max_hash_bytes) or (
-                        {"dir": True} if os.path.isdir(p) else {"missing": True}
-                    )
+            written_paths = set(self.files_written)
             files_read: dict[str, dict[str, Any]] = {}
             for p, v in self.files_read.items():
                 if p in module_files:
                     continue
-                if v.get("dir") and any(w.startswith(p) for w in self.files_written):
-                    v = {**v, "self_written": True}  # a listing of the run's own output tree
                 if not v.get("dir"):
                     real = os.path.realpath(p)
                     if real != p:
                         v = {**v, "realpath": real}
+                    if v.get("by") == "mtime":
+                        written_paths.add(p)  # produced during the run by native code
+                    elif not v.get("self_written") and self._modified_since_read(p, v):
+                        v = {**v, "self_written": True, "by": "modified_during_run"}
+                        written_paths.add(p)
                 files_read[p] = v
+            written_paths |= self._recent_files_in_output_dirs()
+            for p, v in files_read.items():
+                if v.get("dir") and any(w.startswith(p) for w in written_paths):
+                    files_read[p] = {**v, "self_written": True}  # a listing of the run's own output tree
+            written: dict[str, dict[str, Any]] = {}
+            for p in sorted(written_paths):
+                if p not in module_files:
+                    written[p] = file_identity(p, cfg.max_hash_bytes) or (
+                        {"dir": True} if os.path.isdir(p) else {"missing": True}
+                    )
             env = {k: dict(v) for k, v in self.env_reads.items()}
             for k in self.env_set:
                 if k in env and not env[k].get("set_by_run"):
                     env[k]["set_after_read"] = True
 
-        raw_env = os.environ if not self.env_tracked else os._Environ.copy(os.environ)
+        raw_env = raw_environ()
         record.update(
             {
                 "main": main,
@@ -1042,6 +1267,9 @@ class Recorder:
                 "env_tracked": self.env_tracked,
                 "env_bulk_read": self.env_bulk_read,
                 "env_bulk_by": sorted(self.env_bulk_by),
+                "env_bulk": dict(self.env_bulk),
+                "env_bulk_libraries": sorted(self.env_bulk_libraries),
+                "generated_code": sorted(generated)[:200],
                 "files": {"read": files_read, "written": written},
                 "subprocesses": list(self.subprocesses.values()),
                 "native_readers": native,

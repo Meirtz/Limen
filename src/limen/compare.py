@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,6 +54,13 @@ DEFAULT_WAIVE = (
     "env:HOSTNAME",
 )
 _REPLICATE_KINDS = ("param", "arg", "env")
+_REPLICATE_INDEX = re.compile(r"seed|rank|fold|shard|trial|rep|replica|run|worker|split_idx|index", re.I)
+# shell and scheduler variables that differ between sessions and jobs; never reported as possible confounds
+_VOLATILE_ENV = re.compile(
+    r"^(PWD|OLDPWD|SHLVL|_|TERM.*|COLUMNS|LINES|SSH_.*|TMUX.*|STY|WINDOW|WINDOWID|DISPLAY|XDG_.*|SECURITYSESSIONID|"
+    r"__CF.*|Apple_.*|LaunchInstanceID|ITERM_.*|KITTY_.*|VSCODE_.*|SLURM_.*|PBS_.*|LSB_.*|OMPI_.*|PMI_.*|"
+    r"HOSTNAME|MallocNanoZone|LOGNAME|USER|MAIL|OLDPWD|TMPDIR|CONDA_PROMPT_MODIFIER|PS1|HISTFILE|LESS.*|PAGER)$"
+)
 _PRESENCE_KINDS = ("file", "module", "env", "param")
 
 # two-sided 97.5% Student-t quantiles
@@ -180,9 +188,21 @@ def compare(
         findings.append(_unobserved(spec, runs_a, runs_b, children, bulk))
 
     tkeys = [k for k in keys if any(fields.matches(s, k) for s in treatment)]
-    if tkeys:
-        sig_a = [tuple(i.get(k, fields.ABSENT) for k in tkeys) for i in ids_a]
-        sig_b = [tuple(i.get(k, fields.ABSENT) for k in tkeys) for i in ids_b]
+    unobserved_env = [
+        s[len("env:") :]
+        for s in treatment
+        if s.startswith("env:") and not s.endswith(("*", "/")) and not any(fields.matches(s, k) for k in keys)
+    ]
+    if tkeys or unobserved_env:
+
+        def signature(r: dict[str, Any], i: dict[str, str]) -> tuple[str, ...]:
+            return (
+                *(i.get(k, fields.ABSENT) for k in tkeys),
+                *(str(fields.declared_env_value(r, n)) for n in unobserved_env),
+            )
+
+        sig_a = [signature(r, i) for r, i in zip(runs_a, ids_a, strict=True)]
+        sig_b = [signature(r, i) for r, i in zip(runs_b, ids_b, strict=True)]
         if set(sig_a) != set(sig_b):
             mixed = [r["id"] for r, s in zip(runs_a, sig_a, strict=True) if s in set(sig_b)]
             mixed += [r["id"] for r, s in zip(runs_b, sig_b, strict=True) if s in set(sig_a)]
@@ -210,8 +230,10 @@ def compare(
                 confounds.append((k, va, vb))
             continue
         if replicable and len(sa) > 1 and len(sb) > 1:
-            replicates.append(k)
-            continue
+            index_like = bool(_REPLICATE_INDEX.search(k.split(":", 1)[-1]))
+            if index_like or (sa & sb and not _imbalanced(va, vb)):
+                replicates.append(k)
+                continue
         confounds.append((k, va, vb))
     confounds, restated = _split_restated(confounds, ids_a + ids_b, treatment)
     if restated:
@@ -267,6 +289,9 @@ def compare(
             )
         )
 
+    findings.extend(_bulk_differences(runs_a, runs_b, keys, treatment, waive))
+    findings.extend(_dropped_differences(runs_a, runs_b, treatment))
+
     if store is not None:
         findings.extend(_omitted_runs(runs, store))
 
@@ -278,6 +303,60 @@ def compare(
     return comp
 
 
+def _bulk_differences(
+    runs_a: list[dict[str, Any]], runs_b: list[dict[str, Any]], keys: list[str], treatment: list[str], waive: list[str]
+) -> list[Finding]:
+    """Variables the project or its config loader copied in bulk that differ between the arms."""
+    if not all(r.get("env_bulk_read") for r in runs_a + runs_b):
+        return []
+    names = set().union(*[set(r.get("env_bulk") or {}) for r in runs_a + runs_b])
+    differing = []
+    for n in sorted(names):
+        key = f"env:{n}"
+        if key in keys or _VOLATILE_ENV.match(n) or any(fields.matches(s, key) for s in (*treatment, *waive)):
+            continue
+        va = {(r.get("env_bulk") or {}).get(n, fields.UNSET) for r in runs_a}
+        vb = {(r.get("env_bulk") or {}).get(n, fields.UNSET) for r in runs_b}
+        if va != vb:
+            differing.append(key)
+    if not differing:
+        return []
+    return [
+        Finding(
+            WARN,
+            "POSSIBLE_CONFOUND",
+            f"{len(differing)} variable(s) differ between arms and reached the code only through a bulk copy "
+            "of the environment (e.g. a settings loader); if the code uses them, they are confounds",
+            evidence={"fields": differing[:MAX_LISTED]},
+        )
+    ]
+
+
+def _dropped_differences(
+    runs_a: list[dict[str, Any]], runs_b: list[dict[str, Any]], treatment: list[str]
+) -> list[Finding]:
+    """Fields treated as output locations or labels whose values differ: listed so a mistake is visible."""
+    da: list[dict[str, str]] = []
+    db: list[dict[str, str]] = []
+    for runs, out in ((runs_a, da), (runs_b, db)):
+        for r in runs:
+            d: dict[str, str] = {}
+            fields.identity(r, treatment, dropped=d)
+            out.append(d)
+    keys = sorted(set().union(*da, *db))
+    differing = [k for k in keys if set(_values(da, k)) != set(_values(db, k))]
+    if not differing:
+        return []
+    return [
+        Finding(
+            INFO,
+            "TREATED_AS_OUTPUTS",
+            "these differing values were treated as output locations or run labels, not inputs",
+            evidence={k: [_fmt(set(_values(da, k))), _fmt(set(_values(db, k)))] for k in differing[:MAX_LISTED]},
+        )
+    ]
+
+
 def _unobserved(
     spec: str, runs_a: list[dict[str, Any]], runs_b: list[dict[str, Any]], children: bool, bulk: list[str]
 ) -> Finding:
@@ -287,6 +366,14 @@ def _unobserved(
         va = [fields.declared_env_value(r, name) for r in runs_a]
         vb = [fields.declared_env_value(r, name) for r in runs_b]
         if all(v is not None for v in va + vb):
+            untracked = any(r.get("env_tracked") is False for r in runs_a + runs_b)
+            if untracked and set(va) != set(vb):
+                return Finding(
+                    WARN,
+                    "TREATMENT_UNVERIFIED",
+                    f"{name} differs between arms, but environment reads were not observed",
+                    subject=spec,
+                )
             if set(va) == set(vb):
                 return Finding(
                     BLOCK,

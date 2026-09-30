@@ -18,68 +18,61 @@ NOT_EVALUATED_WARN = 0.10
 
 # Commands that cannot read an experiment's environment variables in a way that matters.
 _NON_CONSUMERS = frozenset(
-    [
-        "git",
-        "nvidia-smi",
-        "uname",
-        "hostname",
-        "file",
-        "ldconfig",
-        "which",
-        "whoami",
-        "id",
-        "date",
-        "nproc",
-        "lscpu",
-        "free",
-        "df",
-        "du",
-        "ls",
-        "cat",
-        "mkdir",
-        "cp",
-        "mv",
-        "rm",
-        "ln",
-        "touch",
-        "tar",
-        "gzip",
-        "gunzip",
-        "nvcc",
-        "gcc",
-        "g++",
-        "cc",
-        "c++",
-        "ld",
-    ]
+    "git nvidia-smi uname hostname file ldconfig which whoami id date nproc lscpu free df du ls cat "
+    "mkdir cp mv rm ln touch true false echo sleep".split()
 )
 _SHELLS = frozenset({"sh", "bash", "dash", "zsh"})
+_REDIRECT = re.compile(r"\s*\d*>>?\s*(&\d+|\S+)|\s*<\s*\S+")
 
 
-def env_children(subprocesses: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Child processes that inherited the environment and could have read a variable the parent did not."""
+def _command(s: dict[str, Any]) -> list[str]:
+    argv = list(s.get("argv") or [])
+    if len(argv) >= 3 and os.path.basename(argv[0]) in _SHELLS and argv[1] == "-c":
+        argv = argv[2:]
+    if len(argv) == 1:  # os.system / shell=True string: ignore redirections, refuse compound commands
+        cmd = _REDIRECT.sub("", argv[0])
+        if re.search(r"[;&|`$()\n]", cmd):
+            return argv
+        argv = cmd.split()
+    return argv
+
+
+def children(subprocesses: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Child processes and workers that could have read files or variables (not `git`, `nvidia-smi`...)."""
     out = []
     for s in subprocesses or []:
-        if s.get("env") != "inherited":
-            continue
-        argv = list(s.get("argv") or [])
-        if len(argv) >= 3 and os.path.basename(argv[0]) in _SHELLS and argv[1] == "-c":
-            argv = argv[2:]
-        if len(argv) == 1 and not re.search(r"[;&|`$()<>\n]", argv[0]):  # os.system / shell=True string
-            argv = argv[0].split()
+        argv = _command(s)
         if argv and os.path.basename(argv[0]) in _NON_CONSUMERS:
             continue
         out.append(s)
     return out
 
 
+def env_children(subprocesses: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Children that inherited the environment and could have read a variable the parent did not."""
+    return [s for s in children(subprocesses) if s.get("env") == "inherited"]
+
+
 def _real(p: str | None) -> str | None:
     return os.path.realpath(p) if p else None
 
 
-def _in_output_dir(path: str, written: set[str]) -> bool:
+def _in_output_dir(record: dict[str, Any], path: str) -> bool:
+    """Is ``path`` under a directory the run wrote to through Python, or one named by its arguments?"""
+    files = record.get("files") or {}
+    reads = files.get("read") or {}
+    written = files.get("written") or {}
+    explicit = [w for w in written if not (reads.get(w) or {}).get("by")]
+    dirs = {os.path.dirname(w) for w in explicit} | {w for w in explicit if (written[w] or {}).get("dir")}
+    cwd = record.get("cwd") or ""
+    values = [*list(record.get("argv") or [])[1:]]
+    values += [v for v in (record.get("params") or {}).values() if isinstance(v, str)]
+    for token in values:
+        value = str(token).split("=")[-1]
+        if value and not value.startswith("-"):
+            dirs.add(os.path.abspath(os.path.join(cwd, value)))
     d = os.path.dirname(path)
-    return any(os.path.dirname(w) == d or w.startswith(d + os.sep) or w == d for w in written)
+    return any(d == x or d.startswith(x.rstrip(os.sep) + os.sep) for x in dirs if x and x != cwd)
 
 
 def check_run(record: dict[str, Any], store: Store | None = None) -> list[Finding]:
@@ -133,7 +126,7 @@ def check_run(record: dict[str, Any], store: Store | None = None) -> list[Findin
                 f"module {n!r} from {m.get('path')} replaced the standard-library module",
                 subject=n,
             )
-    changed = [n for n, m in modules.items() if m.get("changed_during_run")]
+    changed = [n for n, m in modules.items() if m.get("changed_during_run") or m.get("changed_before_run")]
     if main.get("changed_during_run"):
         changed.insert(0, "__main__")
     if changed:
@@ -143,6 +136,15 @@ def check_run(record: dict[str, Any], store: Store | None = None) -> list[Findin
             f"{len(changed)} executed source file(s) changed while the run was going; the record keeps the "
             "bytes that were loaded, but anything imported or reloaded later may have used the new ones",
             modules=changed[:20],
+        )
+    edited = [n for n, m in modules.items() if m.get("edited_before_run")]
+    if edited:
+        add(
+            WARN,
+            "CODE_EDITED_BEFORE_RUN",
+            f"{len(edited)} module(s) imported before the run was started were edited after this process started; "
+            "if the edit came after the import, the code that ran is not what the record shows",
+            modules=edited[:20],
         )
     external = [(n, m["path"]) for n, m in modules.items() if m.get("origin") == "external"]
     if main.get("origin") == "external":
@@ -170,16 +172,26 @@ def check_run(record: dict[str, Any], store: Store | None = None) -> list[Findin
     if modified:
         add(INFO, "MODIFIED_CODE", f"{len(modified)} executed module(s) differ from git HEAD", modules=modified[:20])
 
+    if record.get("generated_code"):
+        add(
+            INFO,
+            "GENERATED_CODE",
+            f"{len(record['generated_code'])} module(s) were generated during the run (compiler caches, JIT kernels)"
+            " and are not counted as code identity",
+            modules=record["generated_code"][:20],
+        )
+
     # -- what the record cannot see ----------------------------------------------------------
-    children = env_children(record.get("subprocesses"))
-    if children:
+    kids = children(record.get("subprocesses"))
+    if kids:
         add(
             WARN,
             "CHILD_PROCESSES",
-            f"{sum(c.get('count', 1) for c in children)} child process(es) or worker(s) ran; "
+            f"{sum(c.get('count', 1) for c in kids)} child process(es) or worker(s) ran; "
             "the files and variables they read are not in this record",
-            commands=[" ".join(c["argv"][:6]) for c in children[:8]],
+            commands=[" ".join(c["argv"][:6]) for c in kids[:8]],
         )
+    env_kids = env_children(record.get("subprocesses"))
     if record.get("native_readers"):
         add(
             INFO,
@@ -194,10 +206,9 @@ def check_run(record: dict[str, Any], store: Store | None = None) -> list[Findin
             "os.environ had been replaced before the run, so environment reads were not recorded",
         )
     reads = (record.get("files") or {}).get("read") or {}
-    newer = [p for p, v in reads.items() if v.get("by") == "mtime"]
+    newer = [p for p, v in reads.items() if v.get("by")]
     if newer:
-        written = set((record.get("files") or {}).get("written") or {})
-        outside = [p for p in newer if not _in_output_dir(p, written)]
+        outside = [p for p in newer if reads[p].get("by") == "mtime" and not _in_output_dir(record, p)]
         add(
             WARN if outside else INFO,
             "INPUT_CHANGED_DURING_RUN",
@@ -237,13 +248,13 @@ def check_run(record: dict[str, Any], store: Store | None = None) -> list[Findin
                 )
             if any(fields.matches(spec, f) for f in ident):
                 continue
-            if children or record.get("env_bulk_read"):
+            if env_kids or record.get("env_bulk_read"):
                 why = []
                 if record.get("env_bulk_read"):
                     why.append(
                         f"the process copied os.environ in bulk ({', '.join(record.get('env_bulk_by') or ['?'])})"
                     )
-                if children:
+                if env_kids:
                     why.append("child processes inherited the environment")
                 add(
                     WARN,
@@ -377,9 +388,11 @@ class _Lineage:
             return None
         ended = _time(record.get("ended_at"))
         for ident in ((record.get("files") or {}).get("read") or {}).values():
-            if ident.get("self_written") or not (ident.get("sha256") or ident.get("stat")):
+            if ident.get("self_written") or not ident.get("size") or not (ident.get("sha256") or ident.get("stat")):
                 continue
             token = identity_token(ident)
+            chains: list[list[str]] = []
+            clean = False
             for producer in self.by_token.get(token, []):
                 if producer.get("id") == rid:
                     continue
@@ -391,13 +404,18 @@ class _Lineage:
                 if copied_from:  # the producer passed this exact content through; judge its source instead
                     held = [p for p in copied_from if _is_holdout_path(producer, p, reads[p])]
                     if held:
-                        self.memo[rid] = [rid, producer.get("id", "?"), held[0]]
-                        return self.memo[rid]
+                        chains.append([rid, producer.get("id", "?"), held[0]])
+                    else:
+                        clean = True
                     continue
                 chain = self.taint(producer, depth + 1)
                 if chain:
-                    self.memo[rid] = [rid, *chain]
-                    return self.memo[rid]
+                    chains.append([rid, *chain])
+                else:
+                    clean = True
+            if chains and not clean:  # identical bytes also produced without held-out data carry none of it
+                self.memo[rid] = chains[0]
+                return self.memo[rid]
         return None
 
 

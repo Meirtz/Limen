@@ -488,7 +488,7 @@ def test_model_name_is_an_input_not_a_label() -> None:
     assert "arg:--model-name" in {f.subject for f in comp.findings if f.code == "CONFOUND"}
     assert (
         fields.is_label_key("--run-name")
-        and fields.is_label_key("OUTPUT_DIR")
+        and fields.is_label_key("RUN_ID")
         and not fields.is_label_key("--model-name")
     )
 
@@ -602,3 +602,428 @@ def test_leak_formats(tmp_path: Path) -> None:
         read_ids(tmp_path / "bad.json", "id")
     with pytest.raises(ValueError, match="missing column"):
         read_ids(tmp_path / "t.csv", "pid")
+
+
+# ---- second review round ------------------------------------------------------------------------------
+
+
+def test_library_env_scan_does_not_disable_placebo_detection(
+    project: Project, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """NEW-CAP-01: a library's prefix scan of os.environ (tqdm does this) is not a possible treatment read."""
+    lib = tmp_path_factory.mktemp("lib")
+    (lib / "libscan.py").write_text(
+        "import os\nCONF = {k: v for k, v in os.environ.items() if k.startswith('LIBSCAN_')}\n"
+    )
+    project.write("m.py", "import libscan, os\nos.environ.get('WIKI_ROTO')\n")
+    project.limen(
+        "run", "--treatment", "env:WIKI_ROOT", "m.py", env={"PYTHONPATH": str(lib), "WIKI_ROOT": "x"}, check=True
+    )
+    rec = project.last()
+    assert not rec["env_bulk_read"] and rec["env_bulk_libraries"] == ["libscan"]
+    assert "TREATMENT_NOT_READ" in codes(check_run(rec), "block")
+
+
+@POSIX
+def test_signal_after_script_returned_exits_with_the_signal(project: Project) -> None:
+    """NEW-CAP-02: SIGTERM while non-daemon threads finish is recorded as killed and exits 143."""
+    project.write(
+        "m.py",
+        """
+        import threading, time
+        def late():
+            open('started', 'w').close()
+            time.sleep(5)
+        threading.Thread(target=late).start()
+    """,
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "limen", "run", "m.py"],
+        cwd=project.root,
+        env=clean_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    wait_for(project.root / "started")
+    time.sleep(0.3)
+    proc.send_signal(signal.SIGTERM)
+    _, err = proc.communicate(timeout=60)
+    assert proc.returncode == 143 and b"Traceback" not in err
+    assert project.last()["status"] == "killed"
+
+
+@POSIX
+def test_chained_sigterm_handler_decides(project: Project) -> None:
+    """C1: a handler installed by the script that chains to Limen's (Lightning) keeps a graceful stop graceful."""
+    project.write(
+        "m.py",
+        """
+        import os, signal, time
+        prev = signal.getsignal(signal.SIGTERM)
+        def graceful(s, f):
+            print("graceful")
+            if callable(prev):
+                prev(s, f)
+        signal.signal(signal.SIGTERM, graceful)
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(0.2)
+    """,
+    )
+    out = project.limen("run", "m.py")
+    assert out.returncode == 0 and "graceful" in out.stdout
+    rec = project.last()
+    assert rec["status"] == "ok" and rec["signals_received"] == ["SIGTERM"]
+
+
+def test_results_database_appended_by_runs_is_not_an_input(project: Project) -> None:
+    """NEW-CAP-03/N3: a shared sqlite log or results file each run appends to does not become a confound."""
+    project.write(
+        "m.py",
+        """
+        import json, os, sqlite3
+        lr = os.environ.get("LR", "0.1")
+        con = sqlite3.connect("results.db")
+        con.execute("create table if not exists r (lr text)")
+        con.execute("insert into r values (?)", (lr,))
+        con.commit(); con.close()
+        s = json.load(open("summary.json")) if os.path.exists("summary.json") else []
+        s.append(lr)
+        json.dump(s, open("summary.json", "w"))
+    """,
+    )
+    for _ in range(2):
+        project.limen(
+            "run", "-q", "--name", "db", "--arm", "a", "--treatment", "env:LR", "m.py", env={"LR": "0.1"}, check=True
+        )
+        project.limen(
+            "run", "-q", "--name", "db", "--arm", "b", "--treatment", "env:LR", "m.py", env={"LR": "0.2"}, check=True
+        )
+    out = project.limen("compare", "db:a", "db:b")
+    assert out.returncode == 0, out.stdout
+
+
+def test_environ_copies_are_not_the_process_environment(project: Project) -> None:
+    """NEW-CAP-04: setting a key on a deepcopy of os.environ does not mark the real variable set by the run."""
+    project.write("m.py", "import copy, os\nc = copy.deepcopy(os.environ)\nc['SEED'] = '999'\nos.environ.get('SEED')\n")
+    project.limen("run", "--treatment", "env:SEED", "m.py", env={"SEED": "5"}, check=True)
+    rec = project.last()
+    assert rec["env"]["SEED"] == {"present": True, "value": "5"} and project.limen("check").returncode == 0
+
+
+def test_env_scans_survive_declarations_and_threads(project: Project) -> None:
+    """NEW-CAP-05/06: a scan then a read is kept across a nested limen.run and inside a worker thread."""
+    project.write(
+        "m.py",
+        """
+        import os, threading, limen
+        first = next(iter(os.environ))
+        any(k.startswith("SLURM_") for k in os.environ)
+        os.environ.get(first)
+        with limen.run(treatment=["env:MODE"]):
+            os.environ.get("MODE")
+        def worker():
+            any(k.startswith("X_") for k in os.environ)
+            os.environ.get(first)
+        t = threading.Thread(target=worker); t.start(); t.join()
+        open("first.txt", "w").write(first)
+    """,
+    )
+    project.limen("run", "m.py", check=True)
+    assert (project.root / "first.txt").read_text() in project.last()["env"]
+
+
+def test_symlinked_script_imports_its_siblings(project: Project) -> None:
+    """NEW-CAP-07: sys.path[0] is the directory of the resolved script, as with python."""
+    project.write("code/helper.py", "X = 42\n")
+    project.write("code/train.py", "import helper\nprint(helper.X)\n")
+    (project.root / "runs").mkdir()
+    os.symlink(project.root / "code/train.py", project.root / "runs/train.py")
+    out = project.limen("run", "runs/train.py", check=True)
+    assert "42" in out.stdout
+
+
+def test_main_stays_main_for_threads_and_atexit(project: Project) -> None:
+    """NEW-CAP-08: objects of classes defined in the script can still be pickled after it returns."""
+    project.write(
+        "m.py",
+        """
+        import atexit, pickle, threading, time
+        class Model:
+            pass
+        def save():
+            time.sleep(0.2)
+            pickle.dumps(Model()); open("thread.ok", "w").close()
+        threading.Thread(target=save).start()
+        atexit.register(lambda: (pickle.dumps(Model()), open("atexit.ok", "w").close()))
+    """,
+    )
+    project.limen("run", "m.py", check=True)
+    assert (project.root / "thread.ok").exists() and (project.root / "atexit.ok").exists()
+
+
+def test_module_edited_after_import_before_run(project: Project) -> None:
+    """NEW-CAP-09: with limen.run() in a long-lived process, a module edited after import is flagged."""
+    project.write("src/pkg/model.py", "LR = 0.1\n")
+    project.write(
+        "m.py",
+        """
+        import os, pathlib, time, limen
+        import pkg.model
+        time.sleep(1.1)
+        pathlib.Path("src/pkg/model.py").write_text("LR = 0.55555\\n")
+        with limen.run("nb"):
+            pass
+    """,
+    )
+    subprocess.run([sys.executable, "m.py"], cwd=project.root, env=clean_env(PYTHONPATH="src"), check=True)
+    rec = project.last()
+    mod = rec["modules"]["pkg.model"]
+    found = codes(check_run(rec))
+    if mod.get("changed_before_run"):  # a bytecode cache proves the loaded code differs from the file
+        assert "CODE_CHANGED_DURING_RUN" in found
+    else:  # no bytecode cache (PYTHONDONTWRITEBYTECODE): the edit after process start is still surfaced
+        assert mod.get("edited_before_run") and "CODE_EDITED_BEFORE_RUN" in found
+
+
+def test_unprintable_values_do_not_crash(project: Project) -> None:
+    """NEW-CAP-10."""
+    project.write(
+        "m.py",
+        """
+        import limen
+        class Weird:
+            def __str__(self): raise RuntimeError("no str")
+            __repr__ = __str__
+        limen.param("w", Weird())
+    """,
+    )
+    project.limen("run", "m.py", check=True)
+    assert project.last()["params"]["w"] == "<unrepresentable Weird>"
+
+
+def test_compiler_cache_modules_are_generated_code(project: Project, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """COMPAT-N1: modules loaded from compiler caches are not code identity."""
+    cache = tmp_path_factory.mktemp("inductor")
+    project.write(
+        "m.py",
+        """
+        import importlib.util, os
+        d = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+        p = os.path.join(d, "kernel_abc.py")
+        open(p, "w").write("K = 1\\n")
+        spec = importlib.util.spec_from_file_location("kernel_abc", p)
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        import sys; sys.modules["kernel_abc"] = m
+    """,
+    )
+    project.limen("run", "m.py", env={"TORCHINDUCTOR_CACHE_DIR": str(cache)}, check=True)
+    rec = project.last()
+    assert "kernel_abc" not in rec["modules"] and "kernel_abc" in rec["generated_code"]
+    assert not codes(check_run(rec), "block")
+
+
+def test_native_writes_into_existing_output_dirs(project: Project) -> None:
+    """H1: per-arm output directories that already exist are still recognized as outputs."""
+    project.write(
+        "m.py",
+        """
+        import os, subprocess, sys
+        out = sys.argv[sys.argv.index("--out") + 1]
+        subprocess.run(["sh", "-c", f"echo {os.environ.get('SCALE')} > {out}/model.bin"], check=True)
+    """,
+    )
+    for arm in ("A", "B"):
+        (project.root / "out" / arm).mkdir(parents=True)
+    project.limen(
+        "run",
+        "-q",
+        "--name",
+        "o",
+        "--arm",
+        "A",
+        "--treatment",
+        "env:SCALE",
+        "m.py",
+        "--out",
+        "out/A",
+        env={"SCALE": "1"},
+        check=True,
+    )
+    project.limen(
+        "run",
+        "-q",
+        "--name",
+        "o",
+        "--arm",
+        "B",
+        "--treatment",
+        "env:SCALE",
+        "m.py",
+        "--out",
+        "out/B",
+        env={"SCALE": "2"},
+        check=True,
+    )
+    out = project.limen("compare", "o:A", "o:B")
+    assert out.returncode == 0 and "CONFOUND" not in out.stdout, out.stdout
+
+
+def test_children_with_explicit_env_are_reported(project: Project) -> None:
+    """H2: a child started with a copied environment is still a blind spot worth reporting."""
+    project.write(
+        "m.py", "import os, subprocess, sys\nsubprocess.run([sys.executable, '-c', 'pass'], env=dict(os.environ))\n"
+    )
+    project.limen("run", "m.py", check=True)
+    assert "CHILD_PROCESSES" in codes(check_run(project.last()), "warn")
+
+
+def test_bulk_only_variables_that_differ_are_possible_confounds(project: Project) -> None:
+    """H4: a variable a settings loader read in bulk and that differs between arms is surfaced."""
+    project.write("m.py", "import os, sys\nsettings = dict(os.environ)\nlr = sys.argv[-1]\n")
+    project.limen(
+        "run",
+        "-q",
+        "--name",
+        "bk",
+        "--arm",
+        "a",
+        "--treatment",
+        "arg:--lr",
+        "m.py",
+        "--lr",
+        "0.1",
+        env={"L2": "0.0"},
+        check=True,
+    )
+    project.limen(
+        "run",
+        "-q",
+        "--name",
+        "bk",
+        "--arm",
+        "b",
+        "--treatment",
+        "arg:--lr",
+        "m.py",
+        "--lr",
+        "0.3",
+        env={"L2": "0.5"},
+        check=True,
+    )
+    out = project.limen("compare", "bk:a", "bk:b", "-v")
+    assert "POSSIBLE_CONFOUND" in out.stdout and "env:L2" in out.stdout
+
+
+def test_rules_from_second_review() -> None:
+    """S2 (checkpoint is an input), S4 (redirected git), N1 (mixed arms via declared values), N4 (disjoint knobs),
+    N5 (compilers read env), N6 (untracked env)."""
+    assert not fields.is_label_key("--checkpoint") and fields.is_label_key("--run-name") and fields.is_label_key("ARM")
+    sub = [{"argv": ["/bin/sh", "-c", "git rev-parse HEAD 2>/dev/null"], "env": "inherited"}]
+    assert "PLACEBO" in codes(
+        compare(
+            [record(id="a", subprocesses=sub)], [record(id="b", subprocesses=sub)], treatment=["env:WIKI"]
+        ).findings,
+        "block",
+    )
+
+    def denv(v: str | None) -> dict[str, Any]:
+        return {"WIKI": {"present": False} if v is None else {"present": True, "value": v}}
+
+    bulk = {"env_bulk_read": True, "env_bulk_by": ["pydantic_settings"]}
+    a = [record(id=f"a{i}", declared_env=denv(None), **bulk) for i in range(2)]
+    b = [record(id="b0", declared_env=denv("rich"), **bulk), record(id="b1", declared_env=denv(None), **bulk)]
+    assert "TREATMENT_NOT_APPLIED" in codes(compare(a, b, treatment=["env:WIKI"]).findings, "block")
+
+    ka = [record(id=f"a{i}", argv=["m.py", "--seed", str(i), "--lr", lr]) for i, lr in enumerate(["0.001", "0.002"])]
+    kb = [
+        record(id=f"b{i}", argv=["m.py", "--seed", str(i + 5), "--lr", lr], env=env(W="1"))
+        for i, lr in enumerate(["0.01", "0.02"])
+    ]
+    comp = compare(ka, kb, treatment=["env:W"])
+    assert {f.subject for f in comp.findings if f.code == "CONFOUND"} == {"arg:--lr"}
+
+    gcc = [{"argv": ["gcc", "-E", "k.c"], "env": "inherited"}]
+    comp = compare([record(id="a", subprocesses=gcc)], [record(id="b", subprocesses=gcc)], treatment=["env:CPATH"])
+    assert "TREATMENT_UNVERIFIED" in codes(comp.findings, "warn") and "PLACEBO" not in codes(comp.findings)
+
+    ua = record(id="a", env_tracked=False, declared_env=denv(None))
+    ub = record(id="b", env_tracked=False, declared_env=denv("x"))
+    assert "PLACEBO" not in codes(compare([ua], [ub], treatment=["env:WIKI"]).findings)
+
+
+def test_lineage_ignores_empty_and_independently_produced_content(project: Project) -> None:
+    """N2: an empty file, or bytes a clean run also produced, carry no held-out data."""
+    project.write("limen.toml", 'holdout = ["data/test.jsonl"]\n')
+    project.write("data/test.jsonl", '{"id": 1}\n')
+    project.write("data/train.jsonl", '{"id": 2}\n')
+    project.write("configs/empty.yaml", "")
+    project.write("prep.py", "v = open('data/train.jsonl').read()\nopen('vocab.txt', 'w').write('vocab:' + v)\n")
+    project.write(
+        "evaluate.py",
+        """
+        open('data/test.jsonl').read()
+        open('errors.log', 'w').close()
+        v = open('data/train.jsonl').read()
+        open('vocab2.txt', 'w').write('vocab:' + v)
+    """,
+    )
+    project.write("train.py", "open('configs/empty.yaml').read()\nopen('vocab.txt').read()\n")
+    project.limen("run", "--role", "generate", "prep.py", check=True)
+    project.limen("run", "--role", "eval", "evaluate.py", check=True)
+    project.limen("run", "--role", "train", "train.py", check=True)
+    assert "HOLDOUT_DERIVED" not in codes(check_run(project.last(), Store(project.root / ".limen")))
+
+
+def test_redaction_second_round() -> None:
+    """NEW-PRIV-1/2/3: compound names, more credential shapes, no damage to ordinary paths."""
+    k = b"k" * 32
+    for n in ("PGPASSWORD", "NGROK_AUTHTOKEN", "--dbPassword", "--hfToken"):
+        assert redact.secret_name(n), n
+    for n in ("pad_token_id", "KEY_FIELD", "--sort-key"):
+        assert not redact.secret_name(n), n
+    assert "hunter2" not in redact.text(k, "redis://:hunter2@cache:6379/0")
+    assert "hunter2" not in " ".join(redact.argv(k, ["docker", "run", "-e", "DB_PASSWORD=hunter2", "img"]))
+    assert "hunter2" not in " ".join(redact.argv(k, ["curl", "-u", "admin:hunter2", "https://x"]))
+    assert "hunter2" not in " ".join(redact.argv(k, ["mysql", "-uroot", "-phunter2"]))
+    assert "abcdef0123456789" not in redact.text(k, "api-key: abcdef0123456789abcdef")
+    assert redact.text(k, "out/hf_finetune_a") == "out/hf_finetune_a"
+
+
+def test_key_creation_is_atomic(tmp_path: Path) -> None:
+    """NEW-PRIV-4: concurrent first runs all see the same full key."""
+    code = (
+        f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})\n"
+        f"from limen.store import Store\nprint(Store({str(tmp_path / '.limen')!r}).key().hex())"
+    )
+    procs = [subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE) for _ in range(8)]
+    keys = {p.communicate(timeout=60)[0].strip() for p in procs}
+    assert len(keys) == 1 and len(next(iter(keys))) == 64
+
+
+def test_secret_params_are_digested(project: Project) -> None:
+    """NEW-PRIV-5."""
+    project.write("m.py", "import limen\nlimen.param('db_password', 'hunter2-param')\nlimen.param('lr', 0.1)\n")
+    project.limen("run", "m.py", check=True)
+    params = project.last()["params"]
+    assert params["db_password"].startswith("hmac:") and params["lr"] == 0.1
+
+
+def test_malformed_fields_are_skipped(project: Project) -> None:
+    """NEW-PRIV-6: records with wrongly typed fields are skipped, not fatal."""
+    project.write("m.py", "pass\n")
+    project.limen("run", "m.py", check=True)
+    good = project.last()
+    for i, patch in enumerate(
+        [
+            {"started_at": 5},
+            {"argv": "notalist"},
+            {"env": {"X": "str"}},
+            {"files": {"read": [1]}},
+            {"declared": {"name": 5}},
+        ]
+    ):
+        bad = {**good, "id": f"zzbad{i}", **patch}
+        (project.root / f".limen/runs/zzbad{i}.json").write_text(json.dumps(bad))
+    out = project.limen("ls")
+    assert out.returncode == 0 and "skipped 5" in out.stderr
+    assert project.limen("check", "latest").returncode == 0
