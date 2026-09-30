@@ -25,7 +25,7 @@ and `limen.declare(...)` inside a run.
 | executed code | every project module and the main script, hashed when the import system loaded it, with its path, origin and git state against the HEAD the run started from; the source is copied into the store |
 | child processes and workers | `subprocess`, `os.system`, `os.exec*`, `os.posix_spawn`, `os.fork`, multiprocessing spawn |
 | reported values | `limen.outcome(item, status)`, `limen.metric(name, value)`, `limen.param(name, value)`, gates |
-| status | `ok`, `failed`, `interrupted`, `killed` (SIGTERM, SIGHUP); a record left `running` means the process died without warning |
+| status | `ok`, `failed`, `interrupted`, `killed` (SIGTERM, SIGHUP, unless the script or its launcher handles them); a record left `running` means the process died without warning |
 
 Statuses for `limen.outcome`: `pass` and `fail` for items that were evaluated; `error`, `timeout`,
 `infra` and `skip` for items that were not. Keep the two apart: that is what makes
@@ -64,9 +64,11 @@ involved plus the comparison findings. Blocking findings make the command exit 1
 | `SHADOWED` | block | A project package was imported from somewhere other than its source (a stale copy, an old installed version). |
 | `SHADOWS_STDLIB` | block | A project file named like a standard-library module replaced it. |
 | `CODE_CHANGED_DURING_RUN` | block | An executed source file changed while the run was going. The record keeps the bytes that were loaded. |
+| `CODE_EDITED_BEFORE_RUN` | warn | With `limen.run()` in a long-lived process: a module imported before the run was edited after the process started, so the loaded code may not be what the record shows. |
 | `AMBIGUOUS_IMPORT` | warn | Several copies of a project package are importable; the first on `sys.path` wins. |
 | `EXTERNAL_CODE`, `UNTRACKED_CODE` | warn | Executed code outside the project, or not in git. Copies are kept in the store. |
 | `MODIFIED_CODE` | info | Executed code differs from the HEAD the run started from. |
+| `GENERATED_CODE` | info | Modules generated during the run (compiler and JIT caches) are listed but not counted as code identity. |
 
 ### Did the treatment reach the code?
 
@@ -85,6 +87,8 @@ involved plus the comparison findings. Blocking findings make the command exit 1
 |---|---|---|
 | `CONFOUND` | block | An input other than the treatment differs between the arms, in value or in mix. Waive it with `--waive` or `waive = [...]` in the config if it cannot matter. |
 | `INPUT_ONLY_IN_ONE_ARM` | warn | An input was read by one arm only and the treatment does not obviously explain it. |
+| `POSSIBLE_CONFOUND` | warn | A variable differs between arms and reached the code only through a bulk copy of the environment (a settings loader). |
+| `TREATED_AS_OUTPUTS` | info | Differing values that were treated as output locations or run labels (`--out`, `--run-name`), listed so a wrong call is visible. |
 | `EXPLAINED_BY_TREATMENT`, `TREATMENT_RECORDED_TWICE`, `REPLICATE_FIELDS` | info | Differences Limen attributed to the treatment or to replicates (seeds), listed so they can be checked. |
 
 Only run-level settings (`param:`, `arg:`, `env:`) may vary inside both arms as replicates.

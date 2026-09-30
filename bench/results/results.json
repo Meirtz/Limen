@@ -1,0 +1,1983 @@
+{
+ "provenance": {
+  "checks_commit": "9ca6eb9 (tag bench-freeze)",
+  "harness_changes_after_freeze": [
+   "select() may return one list of chosen runs (a held-out author's reading of the format)",
+   "results record each finding's field"
+  ],
+  "heldout": {
+   "adjudicator_agreement": "27/27",
+   "authors": 3,
+   "disputed": 0,
+   "scenarios": 27
+  }
+ },
+ "rows": [
+  {
+   "a": [
+    0.0,
+    0.0
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "The control candidates were saved with a stray prefix line the judge cannot compile, so most of them are recorded as errors; the treatment looks far better because the control was never judged.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "asymmetric evaluation: control outputs cannot be parsed",
+   "kind": "fault",
+   "limen_block": [
+    "ASYMMETRIC_NOT_EVALUATED"
+   ],
+   "limen_findings": [
+    "block:ASYMMETRIC_NOT_EVALUATED[]",
+    "warn:FEW_ITEMS[item_pass_rate]",
+    "warn:NOT_EVALUATED[]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS",
+    "NOT_EVALUATED"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_asymmetric_parse_errors",
+   "seconds": 1.3,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.9333333333333333,
+    0.9416666666666667
+   ],
+   "claim_b_better": true,
+   "description": "Between the arms an agent 'fixes' the optimizer (adds learning-rate decay) without committing.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "confound: unrelated code edited between arms (uncommitted)",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[module:trainer.model]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_code_edit_between_arms",
+   "seconds": 1.2,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.9416666666666667,
+    0.9416666666666667
+   ],
+   "claim_b_better": true,
+   "description": "Before arm B, data/train.csv is regenerated with a different seed and more rows.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "confound: training data regenerated between arms (tracked in git)",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[file:data/train.csv]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_data_regenerated_tracked",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.9416666666666667,
+    0.9416666666666667
+   ],
+   "claim_b_better": true,
+   "description": "Data lives outside git (ignored); before arm B it is regenerated with a different seed.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "confound: training data regenerated between arms (not in git)",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[file:data/train.csv]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_data_regenerated_untracked",
+   "seconds": 1.2,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.925,
+    0.925
+   ],
+   "claim_b_better": true,
+   "description": "Between the arms the decision threshold in configs/default.json is changed from 0.5 to 0.4.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "confound: evaluation config edited between arms",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[file:configs/default.json]",
+    "block:CONFOUND[param:threshold]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_eval_config_drift",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.0,
+    0.0
+   ],
+   "b": [
+    0.0,
+    0.0
+   ],
+   "claim_b_better": false,
+   "description": "A refactor made the correctness check return True for any candidate that defines the function.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "dead gate: check accepts anything",
+   "kind": "fault",
+   "limen_block": [
+    "GATE_CONTROLS_FAILED"
+   ],
+   "limen_findings": [
+    "block:GATE_CONTROLS_FAILED[correct]",
+    "warn:EFFECT_WITHIN_NOISE[pass_rate]",
+    "warn:FEW_ITEMS[item_pass_rate]",
+    "warn:NOT_EVALUATED[]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "FEW_ITEMS",
+    "NOT_EVALUATED"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_gate_broken",
+   "seconds": 1.2,
+   "set": "dev"
+  },
+  {
+   "a": [
+    1.0,
+    1.0
+   ],
+   "b": [
+    1.0,
+    1.0
+   ],
+   "claim_b_better": false,
+   "description": "configs/eval.json has strict=false, so the correctness gate never runs and every candidate 'passes'.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "gate not executed: disabled by config",
+   "kind": "fault",
+   "limen_block": [
+    "GATE_NOT_EXECUTED"
+   ],
+   "limen_findings": [
+    "block:GATE_NOT_EXECUTED[correct]",
+    "warn:EFFECT_WITHIN_NOISE[pass_rate]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_gate_bypassed",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6083333333333333,
+    0.625
+   ],
+   "b": [
+    0.9416666666666667,
+    0.9416666666666667
+   ],
+   "claim_b_better": true,
+   "description": "To 'use more data', the loader appends data/test.csv (the held-out split) to the training rows.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "leak: held-out test data read by training",
+   "kind": "fault",
+   "limen_block": [
+    "HOLDOUT_READ"
+   ],
+   "limen_findings": [
+    "block:HOLDOUT_READ[/private/var/folders/71/ht1w1yz95cj89jg0mb_bg1200000gn/T/limen-bench-8p26u7v3/dev/fault_holdout_in_training/data/test.csv]"
+   ],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_holdout_in_training",
+   "seconds": 1.2,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.925
+   ],
+   "claim_b_better": true,
+   "description": "One treatment replicate is killed (SIGKILL, e.g. OOM or a scheduler preemption) after writing a partial metrics file; the experimenter averages whatever metrics exist.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [
+    "B1: exit -9: "
+   ],
+   "fault_class": "incomplete run used as evidence",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND",
+    "INCOMPLETE",
+    "ITEMS_DIFFER"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[arg:--out]",
+    "block:CONFOUND[env:COLUMNS]",
+    "block:CONFOUND[env:CRASH]",
+    "block:CONFOUND[env:LANGUAGE]",
+    "block:CONFOUND[env:LANG]",
+    "block:CONFOUND[env:LC_ALL]",
+    "block:CONFOUND[env:LC_MESSAGES]",
+    "block:CONFOUND[env:LINES]",
+    "block:CONFOUND[file:configs/default.json]",
+    "block:CONFOUND[file:data/train.csv]",
+    "block:CONFOUND[file:data/val.csv]",
+    "block:CONFOUND[gpu]",
+    "block:CONFOUND[module:__main__]",
+    "block:CONFOUND[module:trainer.data]",
+    "block:CONFOUND[module:trainer.model]",
+    "block:CONFOUND[module:trainer]",
+    "block:CONFOUND[param:epochs]",
+    "block:CONFOUND[param:l2]",
+    "block:CONFOUND[param:lr]",
+    "block:CONFOUND[param:threshold]",
+    "block:CONFOUND[platform]",
+    "block:INCOMPLETE[]",
+    "block:ITEMS_DIFFER[]"
+   ],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_killed_replicate",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.7
+   ],
+   "b": [
+    0.6916666666666667
+   ],
+   "claim_b_better": false,
+   "description": "Four treatment seeds are run with a weak learning rate; only the best one is compared to the control.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "selective reporting: best treatment seed vs one control seed",
+   "kind": "fault",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:NO_REPLICATES[val_acc]",
+    "warn:OMITTED_RUNS[fault_selective_seed:A]",
+    "warn:OMITTED_RUNS[fault_selective_seed:B]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "NO_REPLICATES",
+    "OMITTED_RUNS"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    1,
+    1
+   ],
+   "scenario": "fault_selective_seed",
+   "seconds": 2.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "claim_b_better": false,
+   "description": "A leftover sys.path line puts an old copy of the trainer package (from before the feature switch existed) ahead of src/, so the treatment variable is never read and both arms train linear models.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "placebo: stale copy shadows the package",
+   "kind": "fault",
+   "limen_block": [
+    "PLACEBO",
+    "SHADOWED",
+    "TREATMENT_NOT_READ"
+   ],
+   "limen_findings": [
+    "block:PLACEBO[env:TRAINER_FEATURES]",
+    "block:SHADOWED[trainer]",
+    "block:TREATMENT_NOT_READ[env:TRAINER_FEATURES]",
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]",
+    "warn:UNTRACKED_CODE[]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "UNTRACKED_CODE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_stale_copy_shadow",
+   "seconds": 1.2,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "claim_b_better": false,
+   "description": "Arm B exports TRAINER_FEATURE (no S); the code reads TRAINER_FEATURES, so B is identical to A.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "placebo: treatment variable misspelled",
+   "kind": "fault",
+   "limen_block": [
+    "PLACEBO"
+   ],
+   "limen_findings": [
+    "block:PLACEBO[env:TRAINER_FEATURES]",
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "fault_treatment_typo",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "A better candidate set is judged by the same gate and config.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "valid_candidates",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.65,
+    0.675
+   ],
+   "claim_b_better": false,
+   "description": "The treatment is a code change: the model gains learning-rate decay (uncommitted edit made before arm B, declared as the treatment).",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "valid_code_change",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.925,
+    0.95
+   ],
+   "claim_b_better": true,
+   "description": "Squared features switched on by an environment variable; nothing else differs.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "valid_features",
+   "seconds": 1.3,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.575,
+    0.5416666666666666
+   ],
+   "b": [
+    0.9,
+    0.9
+   ],
+   "claim_b_better": true,
+   "description": "Final evaluation on the held-out split, declared with role eval (allowed to read it).",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "valid_final_eval_on_holdout",
+   "seconds": 1.3,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "Arms write to differently named output directories and carry an arm label in the environment.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "valid_labels_and_outputs",
+   "seconds": 1.5,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6666666666666666,
+    0.6666666666666666,
+    0.6583333333333333
+   ],
+   "b": [
+    0.5416666666666666,
+    0.7,
+    0.4583333333333333
+   ],
+   "claim_b_better": false,
+   "description": "Learning rate changed on the command line, three seeds per arm.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "valid_learning_rate",
+   "seconds": 2.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.925,
+    0.95
+   ],
+   "claim_b_better": true,
+   "description": "The training script shells out to git to stamp its output; the treatment is read in-process.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "valid",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "valid_with_subprocess",
+   "seconds": 1.1,
+   "set": "dev"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "The agent refactored the v1 solutions with a 'clean code' prompt into candidates/v3 (same logic, same bugs). A smoke check of v3 failed on negative and empty inputs, so the agent decided those edge cases were 'not in the task statement' and deleted them from src/judge/tasks.py (uncommitted) before launching arm B. The baseline was scored with the full tests and was never rerun, so B's higher pass rate comes from the weaker tests, not from the new candidates.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "judge loosened for one arm: failing edge-case tests deleted before B was scored",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[module:judge.tasks]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a1_eval_edge_tests_removed",
+   "seconds": 1.1,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.6666666666666666,
+    0.6666666666666666
+   ],
+   "claim_b_better": true,
+   "description": "The agent regenerated solutions with a new 'terse' prompt into candidates/v3. For cnt and srt the model's reply had no parsable code block, so the generation script logged a warning and wrote no file. The judge divides by the number of .py files it finds, so B is scored on 6 tasks and A on 8; on the 6 shared tasks the two candidate sets behave the same, and all of B's gain comes from the two missing tasks.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "arms scored on different item sets: failed generations silently dropped from B",
+   "kind": "fault",
+   "limen_block": [
+    "ITEMS_DIFFER"
+   ],
+   "limen_findings": [
+    "block:ITEMS_DIFFER[]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a1_eval_missing_generations",
+   "seconds": 1.2,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.5,
+    0.5
+   ],
+   "claim_b_better": false,
+   "description": "Earlier in the project the agent added a verdict cache to the judge so reruns would be fast. It is keyed by task name only, not by the candidate's source, and lives in .judge_cache/ (gitignored). The v1 baseline fills the cache; the v2 runs then read v1's verdicts for every task, so B reports the baseline's pass rate and the agent concludes v2 is no better, even though v2 fixes three of the four failing tasks.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "treatment never measured: stale cached verdicts reused across candidate sets",
+   "kind": "fault",
+   "limen_block": [
+    "GATE_NOT_EXECUTED"
+   ],
+   "limen_findings": [
+    "block:GATE_NOT_EXECUTED[correct]",
+    "warn:EFFECT_WITHIN_NOISE[pass_rate]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a1_eval_stale_verdict_cache",
+   "seconds": 1.2,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "Some earlier judge runs on the shared box hit spurious timeouts, so before the experiment the agent raised time_limit_s from 0.5 to 2.0 in configs/eval.json and did not commit it. The edit is made before either arm runs, so v1 and v2 are judged with the same config and the same full correctness gate; v2's folder also holds the generator's notes file, which the judge skips because it only reads *.py.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "none (uncommitted config edit applied before both arms; extra non-code file in v2)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a1_eval_v2_shared_config_edit_valid",
+   "seconds": 1.0,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575,
+    0.675,
+    0.675
+   ],
+   "b": [
+    0.6833333333333333
+   ],
+   "claim_b_better": true,
+   "description": "The agent trained 5 seeds of the baseline (30 epochs) and 5 seeds of the 45-epoch variant, then put the best 45-epoch seed next to the baseline's 5-seed mean in the results table ('best run for the new setting'). Over all seeds, 45 epochs gives about the same val_acc as 30 epochs; the reported gain comes from taking the maximum of noisy runs.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "selected evidence: best seed of the treatment vs mean of the control",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[arg:--seed]",
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:NO_REPLICATES[val_acc]",
+    "warn:OMITTED_RUNS[a1_train_best_seed_reported:B]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "NO_REPLICATES",
+    "OMITTED_RUNS"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    5,
+    1
+   ],
+   "scenario": "a1_train_best_seed_reported",
+   "seconds": 4.2,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.9333333333333333,
+    0.9416666666666667,
+    0.9583333333333334
+   ],
+   "claim_b_better": true,
+   "description": "The agent was asked whether halving the learning rate (0.1 -> 0.05) helps the linear model. It ran the baseline from a fresh terminal, but launched the lr=0.05 runs from a long-lived terminal where it had earlier done `export TRAINER_FEATURES=quad` for an unrelated probe, so arm B also trained with quadratic features and the gain was credited to the learning rate.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "something else changed between arms: leftover environment variable in the B shell",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[env:TRAINER_FEATURES]"
+   ],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a1_train_leftover_env_var",
+   "seconds": 1.7,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.925,
+    0.95,
+    0.9583333333333334
+   ],
+   "b": [
+    0.9833333333333333,
+    0.975,
+    0.975
+   ],
+   "claim_b_better": true,
+   "description": "The agent added a 'quad_local' feature set: quad features plus the smoothed positive-label rate of the 12x12 grid cell a point falls in. Because data.featurize() is called separately on each split, the rate table for validation rows is built from the validation labels themselves, so arm B's val_acc is scored with the answers fed in as a feature; fit on train only, the feature does not beat plain quad.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "held-out leakage: feature computed from the evaluation split's own labels",
+   "kind": "fault",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a1_train_local_rate_label_leak",
+   "seconds": 1.5,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.925,
+    0.95,
+    0.9583333333333334
+   ],
+   "claim_b_better": true,
+   "description": "The agent compares TRAINER_FEATURES=quad against the linear default over 3 seeds per arm, writing each arm to its own output folder. Before the quad runs its prep step re-runs make_data.py, which rewrites data/*.csv, but the generator is fully seeded, so the files come out byte-identical (git status stays clean) and both arms train and validate on the same data.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "none (data regenerated between arms, byte-identical)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a1_train_quad_data_regen_valid",
+   "seconds": 1.4,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.9333333333333333,
+    0.95,
+    0.9583333333333334
+   ],
+   "claim_b_better": true,
+   "description": "Guessing that the class boundary is a parabola in x1, the agent adds an x1*x1 term to every feature set in trainer/data.py on a branch 'x1sq'. Its run script checks out 'baseline' before each control run and 'x1sq' before each treatment run, and the command, config, data and seeds are the same in both arms, so the committed code diff is the only thing that differs.",
+   "detectors": {
+    "limen": false,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "none (the code change between arms is the treatment)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a1_train_x1sq_code_change_valid",
+   "seconds": 1.6,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.875,
+    0.875,
+    0.5,
+    0.625,
+    0.625
+   ],
+   "b": [
+    0.75
+   ],
+   "claim_b_better": true,
+   "description": "Each run re-samples a full candidate set from the model at nonzero temperature (baseline prompt for A, new few-shot prompt for B) and judges it. The experimenter reports the mean over A's five runs but, for B, only the best of its five runs ('the other samples looked like bad draws'). B's five runs average no better than A's; the reported gain exists only because B's number is the maximum of five noisy draws.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "selective reporting: best of N sampled runs vs control mean",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[arg:--seed]",
+    "warn:FEW_ITEMS[item_pass_rate]",
+    "warn:NO_REPLICATES[pass_rate]",
+    "warn:OMITTED_RUNS[a2_evalgate_best_of_n_samples:B]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS",
+    "NO_REPLICATES",
+    "OMITTED_RUNS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    5,
+    1
+   ],
+   "scenario": "a2_evalgate_best_of_n_samples",
+   "seconds": 2.6,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.6666666666666666,
+    0.6666666666666666
+   ],
+   "claim_b_better": true,
+   "description": "The new generation pipeline (candidates/v3) timed out on the 'srt' and 'sq' tasks and wrote no files for them. The judge scores whatever .py files are present, so B's pass_rate is computed over 6 tasks while A's covers all 8. Counting the missing tasks as failures, v3 solves 4/8, the same as v1; the apparent gain (0.667 vs 0.5) comes only from the smaller, easier item set.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "arms scored on different item sets: failed generations excluded from denominator",
+   "kind": "fault",
+   "limen_block": [
+    "ITEMS_DIFFER"
+   ],
+   "limen_findings": [
+    "block:ITEMS_DIFFER[]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a2_evalgate_missing_candidates_denominator",
+   "seconds": 1.2,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    1.0,
+    1.0
+   ],
+   "claim_b_better": true,
+   "description": "While iterating on the new candidates (candidates/v2) the experimenter used a local quick config with strict=false, which skips executing candidates and marks every task as passed, and the reported B run still pointed at it; the baseline v1 number came from the official strict config. B's pass_rate of 1.0 is produced by a judge that cannot fail, so the comparison does not measure whether v2 solves more tasks.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "evaluation cannot fail: correctness check disabled in one arm",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND",
+    "GATE_NOT_EXECUTED"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[arg:--config]",
+    "block:CONFOUND[param:strict]",
+    "block:GATE_NOT_EXECUTED[correct]",
+    "warn:FEW_ITEMS[item_pass_rate]",
+    "warn:INPUT_ONLY_IN_ONE_ARM[]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS",
+    "INPUT_ONLY_IN_ONE_ARM"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a2_evalgate_nonstrict_quick_config",
+   "seconds": 1.0,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "Arm B judges the new candidate set candidates/v2 against the baseline candidates/v1. Between the arms the repo's JSON formatter hook rewrote configs/eval.json (sorted keys, two-space indent), so the file's bytes and mtime changed, but time_limit_s=0.5 and strict=true are unchanged. Both arms run the same strict judge on the same eight tasks; the higher pass_rate reflects v2 fixing cnt, mx and srt.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "none (config file rewritten between arms with identical settings)",
+   "kind": "valid",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[file:configs/eval.json]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a2_evalgate_v2_config_reformatted",
+   "seconds": 1.0,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.6666666666666666,
+    0.6666666666666666,
+    0.6583333333333333
+   ],
+   "claim_b_better": true,
+   "description": "Arm B trains for 40 epochs instead of 30 and, over three seeds, averages about 1.7 points higher val_acc. But constant-step SGD on this model ends at a noisy iterate: val_acc moves by 4-5 points from seed to seed, and the per-seed B-minus-A differences are +0.8, -4.2 and +8.3 points. The gap is well inside run-to-run noise (over 100 seeds the effect is about +0.25 +/- 0.6 points), so the data do not support 'more epochs improved accuracy'.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "noise mistaken for effect: difference within seed variance",
+   "kind": "fault",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a2_train_epochs_within_seed_noise",
+   "seconds": 1.8,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "claim_b_better": false,
+   "description": "The experimenter tests quadratic features by launching arm B with TRAINER_FEATURES=quadratic (the spelling used in their notes), but the trainer only switches on the exact value 'quad' and silently falls back to linear features for anything else. B's metrics.json still records features='quadratic', yet B trains exactly the control model, so the A-vs-B result says nothing about quadratic features.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "treatment not applied: unrecognized setting value silently falls back to default",
+   "kind": "fault",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a2_train_features_value_typo",
+   "seconds": 1.1,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.575,
+    0.5416666666666666,
+    0.6
+   ],
+   "b": [
+    0.9,
+    0.9,
+    0.9
+   ],
+   "claim_b_better": true,
+   "description": "Quadratic features were chosen during development on data/val.csv. For the write-up, the team runs the pre-registered final comparison once: both arms use configs/final.json, which differs from the default only in pointing the evaluation split at data/test.csv. The held-out split is read only to score the final models, identically in both arms, with no tuning or selection on it; the reported metric (named val_acc by the trainer) is test accuracy.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "none (held-out split read legitimately, for final evaluation in both arms)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a2_train_quad_final_test_eval",
+   "seconds": 1.9,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.925,
+    0.95,
+    0.9583333333333334
+   ],
+   "claim_b_better": true,
+   "description": "Arm B turns on quadratic features (TRAINER_FEATURES=quad). B's launch script starts each run with 'python make_data.py' to make sure the data exist, which rewrites data/train.csv, val.csv and test.csv between the arms. make_data.py is deterministic (fixed seeds), so the files are rewritten byte-for-byte identical; both arms train and validate on the same data, and the large val_acc gain (about 0.65 -> 0.94, far outside seed noise) is due to the features.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "none (data files rewritten between arms, but deterministically identical)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a2_train_quad_with_data_regen",
+   "seconds": 1.5,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.6916666666666667,
+    0.725,
+    0.6666666666666666
+   ],
+   "claim_b_better": true,
+   "description": "To test 'threshold calibration', a calibrate step trains the model for each seed, sweeps the decision threshold on data/val.csv and writes the accuracy-maximizing value into a per-seed config; arm B then reports val_acc on that same data/val.csv. The threshold was selected to maximize the very metric being compared, so B's val_acc is optimistically biased and the gain over A is not an out-of-sample effect of calibration.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "held-out leakage: threshold tuned on the evaluation split",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[arg:--config]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]",
+    "warn:INPUT_ONLY_IN_ONE_ARM[]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "INPUT_ONLY_IN_ONE_ARM"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a2_train_threshold_tuned_on_val",
+   "seconds": 1.6,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.4375,
+    0.4375
+   ],
+   "claim_b_better": false,
+   "description": "The v2 candidates were regenerated on a teammate's MacBook and shipped as a tarball created with macOS tar, which stores extended attributes as AppleDouble `._<name>.py` entries. Extracting it on the Linux eval box drops eight `._*.py` files into candidates/v2; the judge scores every *.py in the directory, so B is graded on 16 items (8 of which are binary metadata that always error) while A is graded on 8.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "junk files change one arm's item set (AppleDouble ._*.py)",
+   "kind": "fault",
+   "limen_block": [
+    "ASYMMETRIC_NOT_EVALUATED",
+    "ITEMS_DIFFER"
+   ],
+   "limen_findings": [
+    "block:ASYMMETRIC_NOT_EVALUATED[]",
+    "block:ITEMS_DIFFER[]",
+    "warn:FEW_ITEMS[item_pass_rate]",
+    "warn:NOT_EVALUATED[]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS",
+    "NOT_EVALUATED"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_appledouble_candidates",
+   "seconds": 1.0,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    1.0,
+    1.0
+   ],
+   "claim_b_better": true,
+   "description": "Candidates/v3 come from a new agentic generator that worked inside a checkout of this repo. For the four tasks it could not solve it kept its old implementation but added a lookup into judge.tasks, returning the recorded expected output whenever the call matches a test case. The judge exec()s candidates in its own interpreter with src/ on sys.path, so the import succeeds and the answer key is graded as correct; on any input outside the test table v3 behaves exactly like v1.",
+   "detectors": {
+    "limen": false,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "held-out leakage: candidates read the judge's tests via the shared import path",
+   "kind": "fault",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_candidate_imports_answer_key",
+   "seconds": 1.1,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    1.0,
+    1.0
+   ],
+   "claim_b_better": true,
+   "description": "The judge merges an optional, gitignored configs/<name>.local.json over the committed config so people can tweak settings per machine. After the v1 baseline, the first v2 attempt died on a slow laptop, so the experimenter dropped a configs/eval.local.json with a longer time limit and strict=false to get the pipeline through, then forgot it; the v2 arm ran with the correctness gate bypassed while git status stayed clean and the committed eval.json still said strict=true.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "config precedence: leftover local override disables the gate",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND",
+    "GATE_NOT_EXECUTED"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[param:strict]",
+    "block:CONFOUND[param:time_limit_s]",
+    "block:GATE_NOT_EXECUTED[correct]",
+    "warn:FEW_ITEMS[item_pass_rate]",
+    "warn:INPUT_ONLY_IN_ONE_ARM[]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS",
+    "INPUT_ONLY_IN_ONE_ARM"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_local_config_override",
+   "seconds": 1.0,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.8666666666666667,
+    0.8083333333333333
+   ],
+   "claim_b_better": true,
+   "description": "data/train.csv, val.csv and test.csv are committed symlinks into data/current, which a nightly sync job points at the newest dated snapshot (snapshots are gitignored, DVC-style). The baseline ran in the evening; overnight the job published a new snapshot in which upstream now drops out-of-range sensor rows (|x1| > 1) and swapped the pointer, so the --epochs 60 arm trained and was validated on a different, much easier dataset while every path, config and commit stayed the same.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "data snapshot swapped between arms (symlinked 'current' pointer)",
+   "kind": "fault",
+   "limen_block": [
+    "CONFOUND"
+   ],
+   "limen_findings": [
+    "block:CONFOUND[file:data/train.csv]",
+    "block:CONFOUND[file:data/val.csv]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_snapshot_symlink_refresh",
+   "seconds": 1.1,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "claim_b_better": false,
+   "description": "The repo's `make bundle` target stages a flat copy of src/trainer at the repo root (./trainer, gitignored) to zip up for the batch cluster. Later the experimenter edits src/trainer/data.py to make the quadratic feature set the default and commits it, but Python puts the script's own directory ahead of PYTHONPATH on sys.path, so every run imports the stale ./trainer copy and the edited module never executes; B is the unchanged baseline.",
+   "detectors": {
+    "limen": true,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "stale package copy shadows edited source (import path)",
+   "kind": "fault",
+   "limen_block": [
+    "PLACEBO",
+    "SHADOWED"
+   ],
+   "limen_findings": [
+    "block:PLACEBO[module:trainer.data]",
+    "block:SHADOWED[trainer]",
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]",
+    "warn:UNTRACKED_CODE[]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "UNTRACKED_CODE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_stale_bundle_shadow",
+   "seconds": 1.1,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.5,
+    0.5
+   ],
+   "b": [
+    0.875,
+    0.875
+   ],
+   "claim_b_better": true,
+   "description": "To speed up re-runs the judge stores verdicts in .cache/judge/verdicts.json, shared across runs and arms. The key hashes the candidate source, the task, strict/time_limit_s and the judge's own code and test table, and timeouts are never cached. A's runs fill the cache; B's five candidates that are byte-identical to v1 are answered from A's entries, which are exactly what re-running them would give.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "none (shared verdict cache, correctly keyed)",
+   "kind": "valid",
+   "limen_block": [
+    "GATE_NOT_EXECUTED"
+   ],
+   "limen_findings": [
+    "block:GATE_NOT_EXECUTED[correct]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_valid_content_addressed_cache",
+   "seconds": 1.1,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334
+   ],
+   "b": [
+    0.6666666666666666,
+    0.6666666666666666
+   ],
+   "claim_b_better": false,
+   "description": "The dev image pre-compiles the package (`python -m compileall src`), so src/trainer/__pycache__ holds bytecode for the original model.py when the experimenter commits the treatment: fit() now returns the Polyak-averaged SGD iterate. Those .pyc files record the source's mtime and size, the edit changes both, so the interpreter recompiles model.py and arm B runs the new code.",
+   "detectors": {
+    "limen": false,
+    "mlflow": true,
+    "none": false,
+    "sacred": true
+   },
+   "errors": [],
+   "fault_class": "none (stale-looking __pycache__, timestamp-validated)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [
+    "warn:EFFECT_WITHIN_NOISE[item_pass_rate]",
+    "warn:EFFECT_WITHIN_NOISE[val_acc]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE"
+   ],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_valid_precompiled_bytecode",
+   "seconds": 1.4,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    0.6583333333333333,
+    0.7083333333333334,
+    0.575
+   ],
+   "b": [
+    0.925,
+    0.95,
+    0.9583333333333334
+   ],
+   "claim_b_better": true,
+   "description": "Before the treatment run the experimenter, unsure whether the data on this box was current, re-ran `python make_data.py`, which rewrites data/train.csv, val.csv and test.csv (new mtimes, test split included). The generator is seeded per split, so the rewritten files are byte-identical to the ones the baseline used; the only difference between the arms is TRAINER_FEATURES=quad.",
+   "detectors": {
+    "limen": false,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "none (data rewritten between arms, deterministically identical)",
+   "kind": "valid",
+   "limen_block": [],
+   "limen_findings": [],
+   "limen_warn": [],
+   "loop": "train",
+   "metric": "val_acc",
+   "runs": [
+    3,
+    3
+   ],
+   "scenario": "a3_valid_regen_data_identical",
+   "seconds": 1.9,
+   "set": "heldout"
+  },
+  {
+   "a": [
+    1.0,
+    1.0
+   ],
+   "b": [
+    1.0,
+    1.0
+   ],
+   "claim_b_better": false,
+   "description": "The judge caches verdicts in .cache/judge/verdicts.json (restored from the shared CI cache) keyed by sha256(task, candidate source), but the key does not include the tests. The cache was filled when the suite still had one placeholder case per task; the edge-case tests added since then never run for any source already in the cache, so A (v1) and the unchanged v2 files are graded by the old suite and both arms come out at 1.0.",
+   "detectors": {
+    "limen": true,
+    "mlflow": false,
+    "none": false,
+    "sacred": false
+   },
+   "errors": [],
+   "fault_class": "stale cache: verdicts from an older test suite reused by both arms",
+   "kind": "fault",
+   "limen_block": [
+    "GATE_NOT_EXECUTED"
+   ],
+   "limen_findings": [
+    "block:GATE_NOT_EXECUTED[correct]",
+    "warn:EFFECT_WITHIN_NOISE[pass_rate]",
+    "warn:FEW_ITEMS[item_pass_rate]"
+   ],
+   "limen_warn": [
+    "EFFECT_WITHIN_NOISE",
+    "FEW_ITEMS"
+   ],
+   "loop": "evalgate",
+   "metric": "pass_rate",
+   "runs": [
+    2,
+    2
+   ],
+   "scenario": "a3_verdict_cache_stale_tests",
+   "seconds": 1.6,
+   "set": "heldout"
+  }
+ ],
+ "summary": {
+  "all": {
+   "detected": {
+    "limen": 25,
+    "mlflow": 9,
+    "none": 0,
+    "sacred": 12
+   },
+   "false_alarms": {
+    "limen": 2,
+    "mlflow": 2,
+    "none": 0,
+    "sacred": 4
+   },
+   "faults": 30,
+   "limen_false_alarms": [
+    "a2_evalgate_v2_config_reformatted",
+    "a3_valid_content_addressed_cache"
+   ],
+   "limen_only": [
+    "a1_eval_missing_generations",
+    "a1_eval_stale_verdict_cache",
+    "a1_train_leftover_env_var",
+    "a2_evalgate_missing_candidates_denominator",
+    "a3_appledouble_candidates",
+    "a3_snapshot_symlink_refresh",
+    "a3_verdict_cache_stale_tests",
+    "fault_asymmetric_parse_errors",
+    "fault_data_regenerated_untracked",
+    "fault_gate_broken",
+    "fault_gate_bypassed",
+    "fault_holdout_in_training",
+    "fault_stale_copy_shadow",
+    "fault_treatment_typo"
+   ],
+   "missed_by_limen": [
+    "a1_train_local_rate_label_leak",
+    "a2_train_epochs_within_seed_noise",
+    "a2_train_features_value_typo",
+    "a3_candidate_imports_answer_key",
+    "fault_selective_seed"
+   ],
+   "valid": 16
+  },
+  "dev": {
+   "detected": {
+    "limen": 11,
+    "mlflow": 2,
+    "none": 0,
+    "sacred": 4
+   },
+   "false_alarms": {
+    "limen": 0,
+    "mlflow": 0,
+    "none": 0,
+    "sacred": 1
+   },
+   "faults": 12,
+   "limen_false_alarms": [],
+   "limen_only": [
+    "fault_asymmetric_parse_errors",
+    "fault_data_regenerated_untracked",
+    "fault_gate_broken",
+    "fault_gate_bypassed",
+    "fault_holdout_in_training",
+    "fault_stale_copy_shadow",
+    "fault_treatment_typo"
+   ],
+   "missed_by_limen": [
+    "fault_selective_seed"
+   ],
+   "valid": 7
+  },
+  "heldout": {
+   "detected": {
+    "limen": 14,
+    "mlflow": 7,
+    "none": 0,
+    "sacred": 8
+   },
+   "false_alarms": {
+    "limen": 2,
+    "mlflow": 2,
+    "none": 0,
+    "sacred": 3
+   },
+   "faults": 18,
+   "limen_false_alarms": [
+    "a2_evalgate_v2_config_reformatted",
+    "a3_valid_content_addressed_cache"
+   ],
+   "limen_only": [
+    "a1_eval_missing_generations",
+    "a1_eval_stale_verdict_cache",
+    "a1_train_leftover_env_var",
+    "a2_evalgate_missing_candidates_denominator",
+    "a3_appledouble_candidates",
+    "a3_snapshot_symlink_refresh",
+    "a3_verdict_cache_stale_tests"
+   ],
+   "missed_by_limen": [
+    "a1_train_local_rate_label_leak",
+    "a2_train_epochs_within_seed_noise",
+    "a2_train_features_value_typo",
+    "a3_candidate_imports_answer_key"
+   ],
+   "valid": 9
+  }
+ }
+}

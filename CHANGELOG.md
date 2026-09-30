@@ -18,7 +18,12 @@ experiment ran the way it claims.
 - `limen trace` walks a file back to the runs and inputs that produced it; `limen leak` finds
   held-out item ids inside training or tuning files.
 - `bench/` contains two small experiment loops, development and held-out fault scenarios, and a
-  harness comparing Limen with MLflow-style and Sacred-style tracking.
+  harness comparing Limen with MLflow-style and Sacred-style tracking. On 27 held-out scenarios
+  written by independent authors after the checks were frozen, Limen blocked 14 of 18 invalid
+  comparisons and 2 of 9 valid ones (MLflow-style tracking: 7 and 2; Sacred-style: 8 and 3).
+- Records are private by default: the store is owner-only, ignores itself in git, and secret-looking
+  values (by name or by shape) in the environment, command lines, child command lines, exception
+  text, parameters and credential files are replaced by keyed digests.
 
 The previous design (advisory write leases over MCP, a Rust daemon) is retired. Its final state is
 tagged `leases-final`.

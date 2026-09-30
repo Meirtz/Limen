@@ -64,8 +64,8 @@ def render(findings: list[Finding], *, verbose: bool = False) -> str:
             for k, v in f.evidence.items():
                 text = v if isinstance(v, str) else json.dumps(v, sort_keys=True, default=str)
                 lines.append(safe(f"      {k}: {text[:400]}"))
-    n_block = sum(f.severity == BLOCK for f in findings)
-    n_warn = sum(f.severity == WARN for f in findings)
+    n_block = sum(1 for sev, *_ in groups if sev == BLOCK)
+    n_warn = sum(1 for sev, *_ in groups if sev == WARN)
     lines.append(f"{n_block} blocking, {n_warn} warnings")
     return "\n".join(lines)
 

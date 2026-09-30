@@ -18,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: uv pip install --system -e . ruff mypy
+      - run: pip install -e . ruff mypy
       - run: ruff format --check src tests bench
       - run: ruff check src tests bench
       - run: mypy
@@ -38,10 +38,10 @@ jobs:
           - { os: macos-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: uv pip install --system -e . pytest
+      - run: pip install -e . pytest
       - run: python -m pytest
 
   bench:
@@ -49,11 +49,12 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: uv pip install --system -e .
+      - run: pip install -e .
       - run: python bench/harness.py dev heldout --out bench/out
+      - run: python bench/summarize.py bench/out/results.json
       - uses: actions/upload-artifact@v4
         with:
           name: bench-results

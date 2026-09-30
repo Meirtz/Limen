@@ -49,6 +49,15 @@ how costly they are, or detection on workloads with native readers, worker proce
 launchers. Faults outside Limen's scope (a weak but working test, reward design, noise in shared
 hardware) are included in the held-out set if their authors wrote them, and count as misses.
 
+## Provenance of the published results
+
+`results/` was produced by running `harness.py dev heldout` on the commit tagged `bench-freeze`
+(Limen's checks as frozen before the held-out scenarios existed). Two harness changes were made
+after the freeze, neither touching detection: `select()` may return a single list of the chosen
+runs (one held-out author read the format that way, which the dry-run tool could not reveal), and
+results record the field of each finding. Three authors wrote 27 held-out scenarios (18 invalid,
+9 valid); the blind adjudicator agreed with all 27 labels.
+
 ## Run it
 
 ```bash

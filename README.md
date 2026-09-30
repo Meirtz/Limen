@@ -15,7 +15,7 @@ what it says:
 - held-out data leaked into training or selection.
 
 Limen records what a Python run actually executed and checks it against what the run declared.
-It is a small, dependency-free library and CLI. It observes and reports; it does not run your
+It is a small library and CLI with no dependencies. It observes and reports; it does not run your
 experiments or change what they do.
 
 ## Install
@@ -24,7 +24,7 @@ experiments or change what they do.
 pip install git+https://github.com/Meirtz/Limen
 ```
 
-Python 3.10 or newer, no dependencies.
+Python 3.10 or newer. No dependencies (on 3.10, `tomli` to read the config file).
 
 ## Use
 
@@ -36,16 +36,33 @@ WIKI_ROOT=kb/rich limen run --name wiki --arm rich --treatment env:WIKI_ROOT eva
 limen compare wiki:base wiki:rich
 ```
 
-If `eval.py` imported a stale copy of your package that never reads `WIKI_ROOT`:
+If `eval.py` picked up a stale copy of your package that never reads `WIKI_ROOT` (here, a
+leftover `sys.path.insert(0, "deploy")`), the comparison is refused:
 
 ```
+$ limen compare wiki:base wiki:rich
+A: 1 run(s) ['wiki:base']
+B: 1 run(s) ['wiki:rich']
+treatment: env:WIKI_ROOT
+effect item_pass_rate: A=0.6 B=0.6 delta=+0  95% CI [+0, +0]
 BLOCK PLACEBO [env:WIKI_ROOT]: WIKI_ROOT was set differently in the arms but no run ever read it
-BLOCK SHADOWED [kb]: package 'kb' was imported from /repo/deploy/kb, not from its source /repo/src/kb (2 runs)
-BLOCK TREATMENT_NOT_READ [env:WIKI_ROOT]: the declared treatment variable was never read by the process, ... (2 runs)
+BLOCK SHADOWED [kb]: package 'kb' was imported from /repo/deploy/kb, not from its source /repo/src/kb (2 runs: ...)
+BLOCK TREATMENT_NOT_READ [env:WIKI_ROOT]: the declared treatment variable was never read by the process, so this arm cannot differ from its control (2 runs: ...)
+WARN  EFFECT_WITHIN_NOISE [item_pass_rate]: pass-rate delta +0.000, 95% CI [+0.000, +0.000] over 40 items includes 0
+3 blocking, 1 warnings
 ```
 
-If the comparison is clean, `compare` prints the effect with a confidence interval and exits 0.
-Report per-item results and metrics from the experiment so the arms can be checked item by item:
+With the stray line removed, the same commands give:
+
+```
+treatment: env:WIKI_ROOT
+  env:WIKI_ROOT: A=<unset> | B=kb/rich
+effect item_pass_rate: A=0.6 B=1 delta=+0.4  95% CI [+0.25, +0.55]
+INFO  EXPLAINED_BY_TREATMENT: 2 input(s) read by one arm only lie under a treatment path
+0 blocking, 0 warnings
+```
+
+`compare` exits 1 on any blocking finding. Report per-item results and metrics from the experiment so the arms can be checked item by item:
 
 ```python
 import limen
@@ -78,7 +95,39 @@ and compares Limen with what MLflow-style tracking (git commit, command-line and
 package versions, run status) and Sacred-style tracking (plus source hashes and host) would let
 you catch with the same comparison rule.
 
-RESULTS_PLACEHOLDER
+| scenarios | detector | invalid comparisons caught | valid comparisons flagged |
+|---|---|---|---|
+| development (in-sample) | MLflow-style | 2 / 12 | 0 / 7 |
+| development (in-sample) | Sacred-style | 4 / 12 | 1 / 7 |
+| development (in-sample) | Limen | 11 / 12 | 0 / 7 |
+| **held-out** | MLflow-style | 7 / 18 | 2 / 9 |
+| **held-out** | Sacred-style | 8 / 18 | 3 / 9 |
+| **held-out** | **Limen** | **14 / 18** | **2 / 9** |
+
+The development scenarios were written together with Limen's checks, so only the held-out row
+says anything about generalization. The held-out scenarios were written after the checks were
+frozen (tag `bench-freeze`), by three independent authors who never saw Limen's source or output,
+and labeled by a separate blind adjudicator (27 of 27 labels agreed). They are small, synthetic and
+all Python, so they measure whether known kinds of fault are caught, not how common they are.
+
+On the held-out set:
+
+- Seven invalid comparisons were caught only by Limen: arms scored on different items or with
+  different rates of unparseable items (three times, once because of stray `._*.py` files in one
+  arm's candidates), a stale verdict cache (twice), a variable left exported in one arm's shell,
+  and a data snapshot re-pointed between arms.
+- Three catches came from a side effect rather than the fault itself: two "best of N seeds"
+  comparisons were flagged because the compared runs used different seeds, and a threshold tuned
+  on the validation split was flagged because the tuned arm read a different config file. The
+  tracking baselines catch these too.
+- Four were missed: a feature computed from the evaluation split's own labels, a noise-level
+  effect (warned as `EFFECT_WITHIN_NOISE`, not blocked), a treatment value misspelled so the code
+  silently fell back to its default, and candidate code importing the judge's test cases.
+- Two valid comparisons were flagged: a config file that was only reformatted between arms, and a
+  content-addressed verdict cache that skipped the declared gate on cache hits.
+
+Per-scenario results: [bench/results/results.md](bench/results/results.md); protocol:
+[bench/README.md](bench/README.md).
 
 ## What it cannot see
 
