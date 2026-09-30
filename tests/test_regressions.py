@@ -487,9 +487,7 @@ def test_model_name_is_an_input_not_a_label() -> None:
     comp = compare([a], [b], treatment=["env:W"])
     assert "arg:--model-name" in {f.subject for f in comp.findings if f.code == "CONFOUND"}
     assert (
-        fields.is_label_key("--run-name")
-        and fields.is_label_key("RUN_ID")
-        and not fields.is_label_key("--model-name")
+        fields.is_label_key("--run-name") and fields.is_label_key("RUN_ID") and not fields.is_label_key("--model-name")
     )
 
 

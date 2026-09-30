@@ -28,7 +28,8 @@ A scenario is a Python file with::
     REPLICATES = 2               # optional
     CLAIM_METRIC = "val_acc"     # optional; default per loop
     def setup(root): ...          # optional, runs once after the copy is committed
-    def select(runs_a, runs_b): ...  # optional: the runs the experimenter chooses to compare
+    def select(runs_a, runs_b): ...  # optional: the runs the experimenter compares, as (runs_a, runs_b)
+                                      # or as one list (each run stays in its arm)
 
 ``cmd`` items may contain ``{seed}`` and ``{arm}``; ``before(root, arm)`` runs before each
 arm's first run (to simulate edits made mid-experiment).
@@ -137,7 +138,13 @@ def run_scenario(path: Path, workdir: Path) -> dict[str, Any]:
     runs_a = [runs[i] for i in ids["A"] if i in runs]
     runs_b = [runs[i] for i in ids["B"] if i in runs]
     if hasattr(sc, "select"):
-        runs_a, runs_b = sc.select(runs_a, runs_b)
+        chosen = sc.select(runs_a, runs_b)
+        if isinstance(chosen, tuple) and len(chosen) == 2:
+            runs_a, runs_b = list(chosen[0]), list(chosen[1])
+        else:  # a single list of the chosen runs: keep each run in the arm it came from
+            ids = {r["id"] for r in chosen}
+            runs_a = [r for r in runs_a if r["id"] in ids]
+            runs_b = [r for r in runs_b if r["id"] in ids]
 
     metric = getattr(sc, "CLAIM_METRIC", DEFAULT_METRIC[sc.LOOP])
     ma = [r.get("metrics", {}).get(metric) for r in runs_a]
@@ -169,6 +176,9 @@ def run_scenario(path: Path, workdir: Path) -> dict[str, Any]:
         },
         "limen_block": limen_block,
         "limen_warn": limen_warn,
+        "limen_findings": sorted(
+            {f"{f.severity}:{f.code}[{f.subject}]" for f in comp.findings if f.severity != "info"}
+        ),
     }
 
 

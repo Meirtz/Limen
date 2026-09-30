@@ -21,7 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering",
   "Topic :: Software Development :: Testing",
 ]
-dependencies = []
+dependencies = ["tomli>=1.1; python_version < '3.11'"]
 
 [project.urls]
 Repository = "https://github.com/Meirtz/Limen"
@@ -50,6 +50,7 @@ addopts = "-q"
 line-length = 120
 target-version = "py310"
 src = ["src", "tests", "bench"]
+extend-exclude = ["bench/scenarios/heldout"]  # kept exactly as their independent authors wrote them
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
