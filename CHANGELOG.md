@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — unreleased
+## 0.3.0-alpha.1 — 2026-10-01
 
 Limen is rebuilt from scratch as a small, dependency-free Python tool that checks whether an
 experiment ran the way it claims.
