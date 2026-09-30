@@ -118,10 +118,11 @@ def _rel(record: dict[str, Any], path: str) -> str:
 
 
 def _output_values(record: dict[str, Any]) -> tuple[set[str], set[str]]:
-    """Paths the run wrote, and paths it read as inputs (not its own outputs)."""
+    """Paths the run wrote (including files its native code produced), and paths it read as inputs."""
     files = record.get("files") or {}
-    read = {p for p, v in (files.get("read") or {}).items() if not v.get("self_written")}
-    return set(files.get("written") or {}), read
+    reads = files.get("read") or {}
+    written = set(files.get("written") or {}) | {p for p, v in reads.items() if v.get("by")}
+    return written, {p for p, v in reads.items() if not v.get("self_written")}
 
 
 def _names(path: str) -> set[str]:
@@ -130,38 +131,16 @@ def _names(path: str) -> set[str]:
 
 
 _LABEL_WORDS = frozenset(
-    [
-        "out",
-        "outs",
-        "output",
-        "outputs",
-        "dir",
-        "path",
-        "name",
-        "tag",
-        "label",
-        "arm",
-        "run",
-        "exp",
-        "experiment",
-        "log",
-        "logs",
-        "save",
-        "ckpt",
-        "checkpoint",
-        "dest",
-        "prefix",
-        "suffix",
-        "id",
-    ]
+    "out outs output outputs dir log logs save dest name label arm run runs exp experiment id tag".split()
 )
+_LABEL_CORE = frozenset("name label arm run runs exp experiment id".split())
 
 
 def is_label_key(key: str) -> bool:
-    """``--run-name``, ``OUTPUT_DIR``, ``RUN_ID``, ``ARM``: every word names an output or a label.
-    (``--model-name`` or ``DATASET_ID`` do not qualify: they name inputs.)"""
+    """``--run-name``, ``RUN_ID``, ``ARM``, ``--exp-name``: every word names an output or a label, and
+    one of them names a run. (``--model-name``, ``--checkpoint``, ``DATASET_ID`` name inputs.)"""
     words = [w for w in re.split(r"[^a-z]+", key.lower()) if w]
-    return bool(words) and all(w in _LABEL_WORDS for w in words)
+    return bool(words) and all(w in _LABEL_WORDS for w in words) and any(w in _LABEL_CORE for w in words)
 
 
 def _is_output(record: dict[str, Any], key: str, value: str, written: set[str], read: set[str]) -> bool:
@@ -183,17 +162,22 @@ def _is_output(record: dict[str, Any], key: str, value: str, written: set[str], 
     return any(value in _names(w) for w in written) and not any(value in _names(r) for r in read)
 
 
-def identity(record: dict[str, Any], keep: Iterable[str] = ()) -> dict[str, str]:
+def identity(record: dict[str, Any], keep: Iterable[str] = (), dropped: dict[str, str] | None = None) -> dict[str, str]:
     """The run's effective identity: every input that could make two runs differ.
 
-    Fields selected by the run's declared treatment or by ``keep`` are never dropped as outputs.
+    Fields selected by the run's declared treatment or by ``keep`` are never dropped as outputs;
+    fields that are dropped as output locations or labels are collected in ``dropped``.
     """
     out: dict[str, str] = {}
     written, read = _output_values(record)
     specs = [*((record.get("declared") or {}).get("treatment") or []), *keep]
 
     def output(key: str, name: str, value: str) -> bool:
-        return not any(matches(s, key) for s in specs) and _is_output(record, name, value, written, read)
+        if any(matches(s, key) for s in specs) or not _is_output(record, name, value, written, read):
+            return False
+        if dropped is not None:
+            dropped[key] = value
+        return True
 
     for name, info in (record.get("modules") or {}).items():
         if info.get("changed_during_run"):

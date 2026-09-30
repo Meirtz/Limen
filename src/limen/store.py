@@ -55,17 +55,27 @@ class Store:
                 pass
 
     def key(self) -> bytes:
-        """The store's secret key for digesting secret values (created on first use)."""
+        """The store's secret key for digesting secret values (created atomically on first use)."""
         if self._key is None:
             self._ensure()
             path = self.path / "key"
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            if not path.exists():
+                tmp = self.path / f"key.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "wb") as f:
                     f.write(secrets.token_bytes(32))
-            except FileExistsError:
-                pass
-            self._key = path.read_bytes()
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.link(tmp, path)  # atomic: a concurrent reader sees no key or a whole key
+                except FileExistsError:
+                    pass
+                finally:
+                    tmp.unlink()
+            data = path.read_bytes()
+            if len(data) != 32:
+                raise RuntimeError(f"{path} is not a 32-byte key; delete it to create a new one")
+            self._key = data
         return self._key
 
     def save(self, record: dict[str, Any]) -> Path:
@@ -154,7 +164,41 @@ def _decl(record: dict[str, Any], key: str) -> Any:
     return (record.get("declared") or {}).get(key)
 
 
-_DICT_FIELDS = ("declared", "files", "env", "modules", "params", "metrics", "outcomes", "gates", "imports")
+_DICT_FIELDS = (
+    "declared", "files", "env", "modules", "params", "metrics", "outcomes", "gates", "imports", "declared_env",
+    "env_bulk", "policy", "platform", "python", "git", "git_at_start",
+)  # fmt: skip
+_DICT_OF_DICTS = ("env", "modules", "outcomes", "gates", "declared_env")
+_STR_FIELDS = ("started_at", "ended_at", "status", "cwd", "root", "exception", "signal")
+_LIST_FIELDS = ("argv", "subprocesses", "native_readers", "generated_code", "env_bulk_by")
+
+
+def _valid(record: Any) -> bool:
+    if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+        return False
+    if any(record.get(k) is not None and not isinstance(record[k], dict) for k in _DICT_FIELDS):
+        return False
+    if any(record.get(k) is not None and not isinstance(record[k], str) for k in _STR_FIELDS):
+        return False
+    if any(record.get(k) is not None and not isinstance(record[k], list) for k in _LIST_FIELDS):
+        return False
+    if not all(isinstance(a, str) for a in record.get("argv") or []):
+        return False
+    if not all(isinstance(s, dict) for s in record.get("subprocesses") or []):
+        return False
+    for k in _DICT_OF_DICTS:
+        if not all(isinstance(v, dict) for v in (record.get(k) or {}).values()):
+            return False
+    files = record.get("files") or {}
+    for part in ("read", "written"):
+        entries = files.get(part) or {}
+        if not isinstance(entries, dict) or not all(isinstance(v, dict) for v in entries.values()):
+            return False
+    declared = record.get("declared") or {}
+    for k in ("name", "arm", "role"):
+        if declared.get(k) is not None and not isinstance(declared[k], str):
+            return False
+    return all(isinstance(declared.get(k) or [], list) for k in ("treatment", "gates"))
 
 
 def load_file(path: Path) -> dict[str, Any]:
@@ -162,8 +206,6 @@ def load_file(path: Path) -> dict[str, Any]:
         record: Any = json.load(f)
     if not isinstance(record, dict) or record.get("schema") != SCHEMA:
         raise ValueError(f"{path}: not a {SCHEMA} record")
-    if not isinstance(record.get("id"), str) or any(
-        not isinstance(record.get(k), dict) for k in _DICT_FIELDS if record.get(k) is not None
-    ):
+    if not _valid(record):
         raise ValueError(f"{path}: malformed {SCHEMA} record")
-    return record
+    return dict(record)

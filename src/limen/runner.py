@@ -28,6 +28,8 @@ _SIGNALS = ("SIGTERM", "SIGHUP")
 _previous: dict[int, Any] = {}
 _owner_pid: int | None = None
 _signalled: list[int] = []
+_chained: list[int] = []
+_after_script: list[Callable[[int], None]] = []  # set once the script has returned (deferred mode)
 
 
 class _Signalled(BaseException):
@@ -41,7 +43,13 @@ def _handler(signum: int, _frame: Any) -> None:
         signal.signal(signum, _previous.get(signum, signal.SIG_DFL))
         os.kill(os.getpid(), signum)
         return
+    if signal.getsignal(signum) is not _handler:
+        _chained.append(signum)  # another handler (e.g. Lightning) took over and chains to us: let it decide
+        return
     _signalled.append(signum)
+    if _after_script:  # the script already returned; threads or atexit handlers were running
+        _after_script[0](signum)
+        return
     raise _Signalled(signum)
 
 
@@ -86,7 +94,19 @@ def _exit_code(e: SystemExit) -> int:
     return 1
 
 
-def _run_file(target: str) -> None:
+def _exec_main(code: Any, module: types.ModuleType, keep: bool) -> None:
+    """Execute ``code`` as the ``__main__`` module. With ``keep``, the module stays ``__main__``
+    afterwards, as it does under ``python``, so threads and atexit handlers can still pickle it."""
+    saved = sys.modules.get("__main__")
+    sys.modules["__main__"] = module
+    try:
+        exec(code, module.__dict__)
+    finally:
+        if not keep and saved is not None:
+            sys.modules["__main__"] = saved
+
+
+def _run_file(target: str, keep: bool) -> None:
     """Run a script as ``python target`` does: ``sys.argv[0]`` as given, ``__file__`` absolute."""
     path = os.path.abspath(target)
     if os.path.isdir(path) or zipfile.is_zipfile(path):
@@ -99,21 +119,41 @@ def _run_file(target: str) -> None:
     module.__dict__.update(
         __file__=path, __cached__=None, __package__=None, __spec__=None, __loader__=None, __builtins__=builtins
     )
-    saved = sys.modules.get("__main__")
-    sys.modules["__main__"] = module
-    try:
-        exec(code, module.__dict__)
-    finally:
-        if saved is not None:
-            sys.modules["__main__"] = saved
+    _exec_main(code, module, keep)
+
+
+def _run_module(target: str, rec: Recorder, keep: bool) -> None:
+    """Run a module as ``python -m target`` does, including packages with ``__main__``."""
+    spec = importlib.util.find_spec(target)  # imports parent packages: now recorded
+    if spec is not None and spec.submodule_search_locations is not None:
+        spec = importlib.util.find_spec(target + ".__main__")
+    if spec is None or spec.loader is None or not hasattr(spec.loader, "get_code"):
+        runpy.run_module(target, run_name="__main__", alter_sys=True)
+        return
+    code = spec.loader.get_code(spec.name)
+    if code is None:
+        raise ImportError(f"no code object available for {target!r}")
+    if spec.origin and os.path.isfile(spec.origin):
+        rec.main = os.path.abspath(spec.origin)
+        with _internal():
+            rec.main_ident = file_identity(rec.main, rec.config.max_hash_bytes, git_blob=True)
+        rec.argv[0] = sys.argv[0] = spec.origin
+    module = types.ModuleType("__main__")
+    module.__dict__.update(
+        __file__=spec.origin,
+        __cached__=getattr(spec, "cached", None),
+        __package__=spec.parent,
+        __spec__=spec,
+        __loader__=spec.loader,
+        __builtins__=builtins,
+    )
+    _exec_main(code, module, keep)
 
 
 def _finalize(rec: Recorder, state: dict[str, Any], on_finish: Callable[[dict[str, Any]], None] | None) -> None:
     if rec.finished or os.getpid() != rec.pid:
         return
-    if _signalled and state["status"] == "ok":  # killed after the script returned (waiting for threads)
-        sig = signal.Signals(_signalled[-1])
-        state.update(status="killed", code=128 + sig.value, sig=sig.name)
+    rec.signals_received = [signal.Signals(s).name for s in _chained]
     try:
         record = rec.finish(state["status"], state["code"], state["exc"], state["sig"])
     except Exception as e:  # never replace the script's own outcome with ours
@@ -163,7 +203,8 @@ def run(
             raise ValueError(f"no such file: {target}")
         path = os.path.abspath(target)
         main = os.path.join(path, "__main__.py") if os.path.isdir(path) else path
-        argv0, path0 = target, path if os.path.isdir(path) else os.path.dirname(path)
+        real = os.path.realpath(path)  # CPython puts the resolved script's directory on sys.path
+        argv0, path0 = target, real if os.path.isdir(real) else os.path.dirname(real)
 
     rec = Recorder(config, argv=[argv0, *args], main=main, **declared)
     state: dict[str, Any] = {"status": "ok", "code": 0, "exc": None, "sig": None}
@@ -177,17 +218,9 @@ def run(
     rec.start()
     try:
         if is_module:
-            spec = importlib.util.find_spec(target)  # imports parent packages: now recorded
-            if spec is not None and spec.submodule_search_locations is not None:
-                spec = importlib.util.find_spec(target + ".__main__") or spec
-            if spec is not None and spec.origin and os.path.isfile(spec.origin):
-                rec.main = os.path.abspath(spec.origin)
-                with _internal():
-                    rec.main_ident = file_identity(rec.main, config.max_hash_bytes, git_blob=True)
-                rec.argv[0] = sys.argv[0] = spec.origin
-            runpy.run_module(target, run_name="__main__", alter_sys=True)
+            _run_module(target, rec, keep=defer)
         else:
-            _run_file(target)
+            _run_file(target, keep=defer)
     except SystemExit as e:
         state["code"] = _exit_code(e)
         state["status"] = "ok" if state["code"] == 0 else "failed"
@@ -199,13 +232,25 @@ def run(
         state.update(status="failed", code=1, exc=f"{type(e).__name__}: {e}")
         traceback.print_exc()
     finally:
-        if os.getpid() == rec.pid:
+        if os.getpid() == rec.pid and not defer:  # under `limen run` the script owns the rest of the process
             sys.argv = saved_argv
             if saved_path0 is not None and sys.path:
                 sys.path[0] = saved_path0
     if os.getpid() != rec.pid:  # a forked child that fell through: exit as plain python would
         raise SystemExit(state["code"])
-    if not defer:
+    if defer:
+
+        def killed_late(signum: int) -> None:
+            sig = signal.Signals(signum)
+            state.update(status="killed", code=128 + signum, sig=sig.name)
+            _finalize(rec, state, on_finish)
+            for stream in (sys.stdout, sys.stderr):
+                with contextlib.suppress(Exception):
+                    stream.flush()
+            os._exit(128 + signum)
+
+        _after_script.append(killed_late)
+    else:
         _finalize(rec, state, on_finish)
     return int(state["code"]), rec
 
