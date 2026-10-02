@@ -46,7 +46,7 @@ BANNED_NAMES = frozenset(
 )
 
 CHILD = r"""
-import builtins, json, signal, sys
+import builtins, copy, json, signal, sys
 req = json.loads(sys.stdin.read())
 sys.setrecursionlimit(4000)
 _exec = exec
@@ -98,14 +98,20 @@ def wrap(name, f):
             STACK.append(name)
             if len(STACK) > MAXD[0]:
                 MAXD[0] = len(STACK)
+        before = None
+        if name in RECORD and len(RECORDS.setdefault(name, [])) < 8:
+            try:
+                before = norm(list(a))  # arguments as passed, before any in-place change
+            except Exception:
+                before = None
         try:
             out = f(*a, **k)
         finally:
             if counted:
                 STACK.pop()
-        if name in RECORD and len(RECORDS.setdefault(name, [])) < 8:
+        if before is not None:
             try:
-                RECORDS[name].append([norm(list(a)), norm(out)])
+                RECORDS[name].append([before, norm(out)])
             except Exception:
                 pass
         return out
@@ -113,6 +119,7 @@ def wrap(name, f):
     return traced
 
 def call(f, x):
+    x = copy.deepcopy(x)  # each call gets its own copy, so in-place edits cannot leak between calls
     signal.setitimer(signal.ITIMER_REAL, req["call_s"])
     try:
         v = f(x)
@@ -132,7 +139,16 @@ def load(src, ns, what):
         return "%s while loading %s: %s" % (type(e).__name__, what, str(e)[:200])
 
 ns = {"__builtins__": safe, "__name__": "aosr_lib"}
-out = {"error": load(req["library"], ns, "<library>")}
+lib = req["library"]
+out = {"error": None, "lib_errors": []}
+if isinstance(lib, str):
+    out["error"] = load(lib, ns, "<library>")
+else:
+    # one chunk per capability: a capability that fails to load is reported and skipped, not fatal
+    for k, chunk in enumerate(lib):
+        err = load(chunk, ns, "<library chunk %d>" % k)
+        if err:
+            out["lib_errors"].append(err)
 for n in req.get("trace", ()):
     if callable(ns.get(n)):
         ns[n] = wrap(n, ns[n])
@@ -205,7 +221,18 @@ class RunResult:
         return [e is None and o == w for o, e, w in zip(self.outputs, self.errors, wanted, strict=False)]
 
 
+def _jail() -> list[str]:
+    """On macOS, deny the child reads of task data and any network access (sandbox-exec); elsewhere, nothing."""
+    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").exists():
+        return []
+    denied = " ".join(f'(subpath "{p.resolve()}")' for p in (config.data_dir(), config.appworld_root()) if p.exists())
+    profile = "(version 1)(allow default)(deny network*)" + (f"(deny file-read* {denied})" if denied else "")
+    return ["/usr/bin/sandbox-exec", "-p", profile]
+
+
 class Sandbox:
+    CHUNK = 40  # capabilities or programs per child request
+
     def __init__(
         self,
         cache_path: Path | None = None,
@@ -244,7 +271,7 @@ class Sandbox:
         wall = min(self.wall_s, 5.0 + self.call_s * n * k * 1.5)
         try:
             proc = subprocess.run(
-                [sys.executable, "-I", "-c", CHILD],
+                [*_jail(), sys.executable, "-I", "-c", CHILD],
                 input=blob,
                 capture_output=True,
                 text=True,
@@ -257,9 +284,12 @@ class Sandbox:
             out = {"error": f"Timeout: the sandbox exceeded {wall:.0f}s", "timeout": True}
         except (json.JSONDecodeError, OSError) as e:
             out = {"error": f"crash: {e}"}
-        if self._db is not None:
+        timed_out = out.get("timeout") or "Timeout" in json.dumps(
+            out.get("results") or out.get("by_name") or out.get("by_program") or ""
+        )
+        if self._db is not None and not timed_out:  # time limits depend on load, so timeouts are retried later
             with self._lock:
-                self._db.execute("INSERT OR REPLACE INTO results VALUES (?, ?)", (key, json.dumps(out)))
+                self._db.execute("INSERT OR IGNORE INTO results VALUES (?, ?)", (key, json.dumps(out)))
         return out
 
     @staticmethod
@@ -274,7 +304,7 @@ class Sandbox:
 
     def run(
         self,
-        library: str,
+        library: str | list[str],
         program: str,
         inputs: list[Any],
         *,
@@ -307,28 +337,29 @@ class Sandbox:
         status = "timeout" if any(e and e.startswith("Timeout") for e in errs) else "ok"
         return RunResult(status, outs, errs, self._trace(d))
 
-    def apply(self, library: str, names: list[str], inputs: list[Any]) -> dict[str, list[Any]]:
+    def apply(self, library: str | list[str], names: list[str], inputs: list[Any]) -> dict[str, list[Any]]:
         """Call each named library function on each input; failed calls give None."""
         if not names or not inputs:
             return {}
         config.empty_cwd().mkdir(parents=True, exist_ok=True)
-        d = self._child({"mode": "apply", "library": library, "names": names, "inputs": inputs})
-        return {n: [r.get("ok") for r in rs] for n, rs in (d.get("by_name") or {}).items()}
+        out: dict[str, list[Any]] = {}
+        for i in range(0, len(names), self.CHUNK):  # bounded requests, so a large image is not cut off by time
+            d = self._child({"mode": "apply", "library": library, "names": names[i : i + self.CHUNK], "inputs": inputs})
+            out.update({n: [r.get("ok") for r in rs] for n, rs in (d.get("by_name") or {}).items()})
+        return out
 
     def programs(
-        self, library: str, programs: list[tuple[str, str]], inputs: list[Any], *, entry: str = "solve"
+        self, library: str | list[str], programs: list[tuple[str, str]], inputs: list[Any], *, entry: str = "solve"
     ) -> dict[str, list[Any]]:
         """Run several whole programs (each in its own namespace on top of the library) on the inputs."""
         if not programs or not inputs:
             return {}
         config.empty_cwd().mkdir(parents=True, exist_ok=True)
-        d = self._child(
-            {
-                "mode": "programs",
-                "library": library,
-                "programs": [list(p) for p in programs],
-                "inputs": inputs,
-                "entry": entry,
-            }
-        )
-        return {p: [r.get("ok") for r in rs] for p, rs in (d.get("by_program") or {}).items()}
+        out: dict[str, list[Any]] = {}
+        for i in range(0, len(programs), self.CHUNK):
+            chunk = [list(p) for p in programs[i : i + self.CHUNK]]
+            d = self._child(
+                {"mode": "programs", "library": library, "programs": chunk, "inputs": inputs, "entry": entry}
+            )
+            out.update({p: [r.get("ok") for r in rs] for p, rs in (d.get("by_program") or {}).items()})
+        return out

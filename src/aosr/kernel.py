@@ -161,14 +161,14 @@ class Kernel:
             return 0.0
         return sum(self.world.similarity(o, w) for o, w in zip(outputs, wanted, strict=True)) / len(wanted)
 
-    def probe(self, image: Image, task: Task, library: str, settings: Settings) -> list[tuple[str, float]]:
+    def probe(self, image: Image, task: Task, library: str | list[str], settings: Settings) -> list[tuple[str, float]]:
         names = [n for n in image.names() if image.cap(n)["arity"] == 1]
         names.sort(key=lambda n: (-image.head.caps[n].uses, image.head.caps[n].admitted))
         outs = self.sandbox.apply(library, names[: settings.probe_cap], task.train_inputs)
         scores = [(n, self.score(o, task)) for n, o in outs.items()]
         return sorted(scores, key=lambda s: (-s[1], -image.head.caps[s[0]].uses, image.head.caps[s[0]].admitted))
 
-    def precedents(self, image: Image, task: Task, library: str) -> list[tuple[str, float]]:
+    def precedents(self, image: Image, task: Task, library: str | list[str]) -> list[tuple[str, float]]:
         progs = [(t, src) for t, src in image.programs() if t != task.id]
         outs = self.sandbox.programs(library, progs, task.train_inputs)
         return sorted(((t, self.score(o, task)) for t, o in outs.items()), key=lambda s: (-s[1], s[0]))
@@ -236,7 +236,7 @@ class Kernel:
     # ---------------------------------------------------------------- running
 
     def execute(
-        self, image: Image, library: str, task: Task, source: str, kind: str, index: int
+        self, image: Image, library: str | list[str], task: Task, source: str, kind: str, index: int
     ) -> tuple[Attempt, list[Any], list[str | None]]:
         n = len(task.train)
         defs = top_level_defs(source)
@@ -263,7 +263,7 @@ class Kernel:
         self, task: Task, image: Image, model: Model, settings: Settings, meta: dict[str, str] | None = None
     ) -> Episode:
         settings = with_policy(settings, image.slot_source("policy"))
-        library = image.library_source()
+        library = image.library_chunks()
         use_helpers = settings.context in ("full", "helpers")
         use_programs = settings.context in ("full", "precedents")
         probes = self.probe(image, task, library, settings) if use_helpers and image.names() else []

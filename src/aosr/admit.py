@@ -14,6 +14,7 @@ existing capability on every recorded call is not admitted again.
 from __future__ import annotations
 
 import ast
+import builtins
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +31,7 @@ class Admission:
     duplicates: dict[str, str] = field(default_factory=dict)  # new helper -> existing capability
     vacuous: list[str] = field(default_factory=list)
     renamed: dict[str, str] = field(default_factory=dict)
+    rejected: list[str] = field(default_factory=list)  # staged helpers that did not reproduce the solution
     lifted: bool = False
     program: str | None = None
 
@@ -77,6 +79,19 @@ def lift(src: str) -> str:
     return ast.unparse(tree)
 
 
+BUILTINS = frozenset(dir(builtins))
+
+
+def imported(imports: list[str]) -> set[str]:
+    """Names bound by import statements."""
+    names: set[str] = set()
+    for line in imports:
+        for node in ast.walk(ast.parse(line)):
+            if isinstance(node, ast.Import | ast.ImportFrom):
+                names |= {(a.asname or a.name).split(".")[0] for a in node.names}
+    return names
+
+
 def arity(fn: ast.FunctionDef) -> int:
     a = fn.args
     return len(a.posonlyargs) + len(a.args) - len(a.defaults)
@@ -115,7 +130,7 @@ class Admitter:
         """Mutate ``head`` with what ``attempt`` (verified and test-correct on ``task``) contributes."""
         out = Admission(task.id)
         image = Image(self.store, head)
-        library = image.library_source()
+        library = image.library_chunks()
         src = attempt.source
         try:
             lifted = lift(src)
@@ -158,19 +173,30 @@ class Admitter:
             closure.append(n)
             todo += sorted(m for m in free_loads(fresh[n]) if m in fresh and m not in closure)
         mapping = {n: f"{n}_{task.id[:6]}" for n in closure if n in head.caps}
-        out.renamed = mapping
+        out.renamed = dict(mapping)
         records = attempt.records
+        # first decide which helpers duplicate an existing capability; their callers are pointed at it
+        for name in closure:
+            fn0 = fresh[name]
+            twin = self._twin(image, library, fn0, records.get(name, []))
+            if twin is not None:
+                out.duplicates[mapping.get(name, name)] = twin
+                mapping[name] = twin
+        staged: dict[str, dict[str, Any]] = {}
         for name in closure:
             new = mapping.get(name, name)
+            if new in head.caps:
+                continue  # mapped onto an existing capability
             fn = ast.parse(rename(ast.unparse(fresh[name]), mapping)).body[0]
             assert isinstance(fn, ast.FunctionDef)
-            twin = self._twin(image, library, fn, records.get(name, []))
-            if twin is not None:
-                out.duplicates[new] = twin
-                continue
             doc = (ast.get_docstring(fn) or "").strip().splitlines()
-            deps = sorted(m for m in free_loads(fn) if m in head.caps or m in {mapping.get(c, c) for c in closure})
-            cap = {
+            targets = {mapping.get(c, c) for c in closure}
+            unresolved = free_loads(fn) - bound_in(fn) - BUILTINS - imported(imports) - set(head.caps) - targets
+            if unresolved:  # it reads module state the library would not have
+                out.rejected.append(new)
+                continue
+            deps = sorted(m for m in free_loads(fn) if (m in head.caps or m in targets) and m != new)
+            staged[new] = {
                 "type": "cap",
                 "name": new,
                 "src": ast.unparse(fn),
@@ -178,24 +204,44 @@ class Admitter:
                 "doc": doc[0][:160] if doc else "(no docstring)",
                 "sig": signature(fn),
                 "arity": arity(fn),
-                "deps": [d for d in deps if d != new],
+                "deps": deps,
                 "origin": {**origin, "task": task.id, "position": position},
             }
-            head.caps[new] = CapEntry(self.store.put(cap), ACTIVE, 0, position)
+        if out.rejected:  # one unusable helper: admit none from this solution, since its callers may need it
+            out.rejected = sorted(set(out.rejected) | set(staged))
+            return out
+        if not staged:
+            return out
+        # the task's solve, without the helpers it defined, must still verify on top of the extended library
+        trial = head.copy()
+        for new, cap in staged.items():
+            trial.caps[new] = CapEntry(self.store.put(cap), ACTIVE, 0, position)
+        program = ast.parse(rename(src, mapping))
+        program.body = [
+            n
+            for n in program.body
+            if not (isinstance(n, ast.FunctionDef) and n.name in set(staged) | set(mapping.values()))
+        ]
+        check = self.sandbox.run(Image(self.store, trial).library_chunks(), ast.unparse(program), task.train_inputs)
+        if check.matches(task.train_outputs) != [True] * len(task.train):
+            out.rejected = sorted(staged)
+            return out
+        for new in staged:
+            head.caps[new] = trial.caps[new]
             out.added.append(new)
         return out
 
     def _source(self, image: Image, name: str) -> str:
         return str(image.cap(name)["src"]) if name in image.head.caps else ""
 
-    def _twin(self, image: Image, library: str, fn: ast.FunctionDef, records: list[Any]) -> str | None:
+    def _twin(self, image: Image, library: str | list[str], fn: ast.FunctionDef, records: list[Any]) -> str | None:
         """An existing active capability of the same arity that returns the same value on every recorded call."""
         if not records or arity(fn) != 1:
             return None
         inputs = [args[0] for args, _ in records if isinstance(args, list) and len(args) == 1]
         wanted = [result for args, result in records if isinstance(args, list) and len(args) == 1]
-        if not inputs:
-            return None
+        if not inputs or any(w is None for w in wanted):
+            return None  # a helper that returns nothing cannot be told apart from one that fails
         same = [n for n in image.names() if image.cap(n)["arity"] == 1]
         outs = self.sandbox.apply(library, same, inputs)
         return next((n for n in same if outs.get(n) == wanted), None)

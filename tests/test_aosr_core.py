@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -279,3 +280,62 @@ def test_holm_and_wilson() -> None:
     assert adj == {"a": 0.03, "c": 0.06, "b": 0.06}
     lo, hi = stats.wilson(5, 10)
     assert lo < 0.5 < hi
+
+
+# ---------------------------------------------------------------- regressions from the measurement audit
+
+
+def test_a_broken_capability_does_not_break_the_library() -> None:
+    sb = Sandbox(None)
+    chunks = ["", "def good(g):\n    return g[::-1]", "def bad(g, bg=MISSING):\n    return g"]
+    assert sb.run(chunks, "def solve(g):\n    return good(g)\n", [[1, 2]]).outputs == [[2, 1]]
+    assert sb.apply(chunks, ["good", "bad"], [[1, 2]]) == {"good": [[2, 1]]}
+
+
+def test_inputs_are_copied_for_every_call() -> None:
+    lib = "def clobber(g):\n    g.append(9)\n    return len(g)\n\ndef size(g):\n    return len(g)\n"
+    assert Sandbox(None).apply(lib, ["clobber", "size"], [[1, 2]]) == {"clobber": [3], "size": [2]}
+
+
+def test_admission_rejects_helpers_that_need_module_state(tmp_path: Path) -> None:
+    _, admitter, task = admit_setup(tmp_path)
+    src = (
+        "BG = 0\n\n"
+        'def mirror(g):\n    """Mirror, but reads a module constant."""\n'
+        "    return [r[::-1] for r in g] if BG == 0 else g\n\n"
+        "def solve(grid):\n    return mirror(grid)\n"
+    )
+    head = Head()
+    adm = admitter.admit(head, task, attempt(src), 0, {})
+    assert adm.added == [] and adm.rejected == ["mirror"] and list(head.programs) == [task.id]
+
+
+def test_callers_of_a_duplicate_are_pointed_at_the_existing_capability(tmp_path: Path) -> None:
+    _, admitter, task = admit_setup(tmp_path)
+    head = Head()
+    admitter.admit(head, task, attempt(MIRROR), 0, {})
+    src = (
+        'def reflect(g):\n    """Same as mirror."""\n    return [list(reversed(r)) for r in g]\n\n'
+        'def reflect_twice_then_once(g):\n    """Three reflections."""\n    return reflect(reflect(reflect(g)))\n\n'
+        "def solve(grid):\n    return reflect_twice_then_once(grid)\n"
+    )
+    recs = {"reflect": [[[[[1, 2]]], [[2, 1]]], [[[[3, 4, 5]]], [[5, 4, 3]]]]}
+    adm = admitter.admit(head, task, attempt(src, recs), 1, {})
+    assert adm.duplicates == {"reflect": "mirror"} and adm.added == ["reflect_twice_then_once"]
+    image = Image(admitter.store, head)
+    assert "mirror(mirror(mirror(g)))" in image.cap("reflect_twice_then_once")["src"]
+    assert image.cap("reflect_twice_then_once")["deps"] == ["mirror"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the file-read jail uses macOS sandbox-exec")
+def test_sandboxed_code_cannot_read_task_data() -> None:
+    from aosr import config
+
+    data = config.data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "answer.txt").write_text("42")
+    prog = (
+        f"import typing\ndef solve(x):\n    return typing.sys.modules['io'].open({str(data / 'answer.txt')!r}).read()\n"
+    )
+    r = Sandbox(None).run("", prog, [0])
+    assert r.outputs == [None] and r.errors[0] and "42" not in str(r.outputs)
