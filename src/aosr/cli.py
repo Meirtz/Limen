@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--offset", type=int, default=0)
     e.add_argument("--model", default="haiku-nothink")
     e.add_argument("--budget", type=int, default=2)
-    e.add_argument("--context", default="full", choices=["full", "none"])
+    e.add_argument("--context", default="full", choices=["full", "helpers", "precedents", "none"])
     e.add_argument("--sample-offset", type=int, default=1000)
     e.add_argument("--out", required=True)
     r = sub.add_parser("report", help="summarize evaluated arms and compare them")
