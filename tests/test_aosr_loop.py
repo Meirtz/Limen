@@ -262,3 +262,15 @@ def test_policy_slot_is_clamped_and_retunes_the_kernel(world: Arc, tmp_path: Pat
     image = Image(store, store.head(final))
     assert json.loads(image.slot_source("policy") or "{}") == {"index_lines": 0, "precedent_k": 0}
     assert image.slot_source("notes") == "1. Look closely."
+
+
+def test_demo_page_renders_growth(world: Arc, tmp_path: Path) -> None:
+    from aosr.demo import render
+
+    store = Store(tmp_path / "store")
+    sb = Sandbox(None)
+    grow(store, boot(store), tasks(world, STREAM), ArcEngine(store, sb, world), FakeModel(oracle()), tmp_path / "g",
+         GrowConfig(batch=2, run="demo"), progress=lambda s: None)  # fmt: skip
+    page = render(store, "demo", tmp_path / "g" / "grow.jsonl", [], "test")
+    assert page.startswith("<!doctype html>") and "flip_rows" in page and "<svg" in page
+    assert "stream tasks solved" in page and "No kernel epochs" in page
