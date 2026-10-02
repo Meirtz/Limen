@@ -162,6 +162,21 @@ def cmd_knockout(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_slot(args: argparse.Namespace) -> int:
+    """Derive an image whose slot (notes or policy) is replaced; records who set it."""
+    store = _store(args)
+    digest = store.resolve(args.image)
+    head = store.head(digest)
+    head.parent, head.seq = digest, head.seq + 1
+    head.slots[args.slot] = store.put({"type": "slot", "slot": args.slot, "src": args.value, "origin": "manual"})
+    head.note = f"{args.slot} set by hand"
+    new = store.commit(head)
+    if args.ref:
+        store.set_ref(args.ref, new)
+    print(new)
+    return 0
+
+
 def cmd_lineage(args: argparse.Namespace) -> int:
     store = _store(args)
     for d in store.lineage(store.resolve(args.image)):
@@ -222,6 +237,11 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--names", default="")
     k.add_argument("--admitted-before", type=int, default=None)
     k.add_argument("--ref", default="")
+    sl = add("slot", cmd_slot, "derive an image with a kernel slot (notes or policy) set by hand")
+    sl.add_argument("image")
+    sl.add_argument("slot", choices=["notes", "policy"])
+    sl.add_argument("value")
+    sl.add_argument("--ref", default="")
     lg = add("lineage", cmd_lineage, "list an image's ancestors")
     lg.add_argument("image")
     args = p.parse_args(argv)
