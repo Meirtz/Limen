@@ -31,7 +31,8 @@ class GrowConfig:
     epoch_every: int = 0  # kernel evolution every N stream tasks (0 = never)
     engineer: Model | None = None
     window: int = 20
-    margin: int = 2
+    margin: int = 3
+    start: int = 0  # stream position of the first task (when continuing a run from a non-empty image)
 
 
 def boot(store: Store, seed_slots: dict[str, str] | None = None) -> str:
@@ -71,11 +72,13 @@ def grow(
         image = Image(store, head.copy())
         episodes = engine.run(batch, image, model, settings, meta)
         verdicts = [engine.judge(t, e) for t, e in zip(batch, episodes, strict=True)]
-        good = [(t, e, i + j) for j, (t, e, ok) in enumerate(zip(batch, episodes, verdicts, strict=True)) if ok]
+        good = [
+            (t, e, cfg.start + i + j) for j, (t, e, ok) in enumerate(zip(batch, episodes, verdicts, strict=True)) if ok
+        ]
         prepared = engine.contribute(image, good, model, meta)  # one per solved task, in order
         contributions = {t.id: c for (t, _, _), c in zip(good, prepared, strict=True)}
         for j, (task, ep, ok) in enumerate(zip(batch, episodes, verdicts, strict=True)):
-            pos = i + j
+            pos = cfg.start + i + j
             rec: dict[str, Any] = {
                 "position": pos,
                 "task": task.id,

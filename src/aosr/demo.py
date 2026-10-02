@@ -75,7 +75,9 @@ def _graph(image: Image) -> str:
     return "".join(out)
 
 
-def render(store: Store, run: str, grow_log: Path, evals: list[Path], title: str = "") -> str:
+def render(
+    store: Store, run: str, grow_log: Path, evals: list[Path], title: str = "", budget: int | None = None
+) -> str:
     final = store.resolve(f"{run}/latest")
     image = Image(store, store.head(final))
     recs = [json.loads(x) for x in grow_log.read_text().splitlines() if x.strip()]
@@ -154,7 +156,7 @@ def render(store: Store, run: str, grow_log: Path, evals: list[Path], title: str
         )
         for p in evals:
             h, rws = load_arm(p)
-            m = summarize(h, rws)
+            m = summarize(h, rws, budget)
             parts.append(
                 f"<tr><td>{html.escape(m['arm'])}</td><td>{m['n']}</td><td>{m['budget']}</td><td>{m['solved']}</td>"
                 f"<td>{m['rate']:.1%}</td><td>{m['calls']}</td><td>{m['usd']:.2f}</td><td>{m['solved_with_library']}</td><td>{m['presolved']}</td></tr>"
@@ -163,6 +165,8 @@ def render(store: Store, run: str, grow_log: Path, evals: list[Path], title: str
     return "".join(parts)
 
 
-def write(store: Store, run: str, grow_log: Path, evals: list[Path], out: Path, title: str = "") -> Path:
-    out.write_text(render(store, run, grow_log, evals, title))
+def write(
+    store: Store, run: str, grow_log: Path, evals: list[Path], out: Path, title: str = "", budget: int | None = None
+) -> Path:
+    out.write_text(render(store, run, grow_log, evals, title, budget))
     return out

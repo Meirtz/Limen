@@ -40,6 +40,7 @@ def score_episode(engine: Engine, task: Task, ep: Episode, budget: int) -> dict[
         "solved_at": solved_at,
         "correct": correct,
         "calls": ep.calls,
+        "call_usd": [round(a.usd, 6) for a in ep.attempts if a.call_key is not None],
         "in_tokens": sum(a.in_tokens for a in ep.attempts),
         "out_tokens": sum(a.out_tokens for a in ep.attempts),
         "usd": round(sum(a.usd for a in ep.attempts), 6),
@@ -70,6 +71,7 @@ def run_arm(store: Store, arm: Arm, tasks: list[Task], engine: Engine, out: Path
                     "world": engine.name,
                     "budget": arm.settings.budget,
                     "context": arm.settings.context,
+                    "sample_offset": arm.settings.sample_offset,
                 }
             )
             + "\n"
@@ -84,12 +86,26 @@ def load_arm(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return json.loads(lines[0]), [json.loads(x) for x in lines[1:] if x.strip()]
 
 
-def summarize(header: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+def call_costs(row: dict[str, Any]) -> list[float]:
+    """Offline USD of each model call of an episode, in order."""
+    if "call_usd" in row:
+        return [float(x) for x in row["call_usd"]]
+    atts = (row.get("episode") or {}).get("attempts")
+    if atts is not None:
+        return [float(a["usd"]) for a in atts if a.get("call_key")]
+    return [row["usd"] / row["calls"]] * row["calls"] if row["calls"] else []
+
+
+def summarize(header: dict[str, Any], rows: list[dict[str, Any]], budget: int | None = None) -> dict[str, Any]:
+    """Totals as if every episode had been cut at ``budget`` model calls (default: the arm's own budget)."""
     n = len(rows)
-    budget = header["budget"]
+    own = header["budget"]
+    budget = own if budget is None else budget
+    if budget > own:
+        raise ValueError(f"arm {header['arm']} ran with budget {own}; it cannot be scored at {budget}")
     solved = sum(r["solved_at"][budget] for r in rows)
-    calls = sum(r["calls"] for r in rows)
-    usd = sum(r["usd"] for r in rows)
+    calls = sum(min(r["calls"], budget) for r in rows)
+    usd = sum(sum(call_costs(r)[:budget]) for r in rows)
     reuse = sum(1 for r in rows if r["solved_at"][budget] and r["first_verified"]["used"])
     presolved = sum(1 for r in rows if r["solved_at"][budget] and r["first_verified"]["kind"] == "presolve")
     return {

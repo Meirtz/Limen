@@ -75,7 +75,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
     store = _store(args)
     engine = _engine(args, store)
     out = Path(args.out).expanduser()
-    stream = engine.load("stream", args.n)
+    stream = engine.load("stream", args.n, args.skip)
     cps = tuple(int(x) for x in args.checkpoints.split(",") if x) if args.checkpoints else ()
     model = _model(args.model, out / "ledger.jsonl")
     engineer = _model(args.engineer, out / "ledger.jsonl") if args.epoch_every else None
@@ -84,6 +84,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
         settings=Settings(budget=args.budget),
         checkpoints=cps,
         run=args.run,
+        start=args.skip,
         epoch_every=args.epoch_every,
         engineer=engineer,
         window=args.window,
@@ -118,7 +119,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     print("| arm | n | budget | solved | rate | by budget | calls | USD | USD/solve | with library | presolved |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for h, rows in arms.values():
-        s = summarize(h, rows)
+        s = summarize(h, rows, args.budget)
         print(
             f"| {s['arm']} | {s['n']} | {s['budget']} | {s['solved']} | {s['rate']:.3f} | {s['by_budget'][1:]} | "
             f"{s['calls']} | {s['usd']:.2f} | {s['usd_per_solve']} | {s['solved_with_library']} | {s['presolved']} |"
@@ -184,8 +185,9 @@ def cmd_slot(args: argparse.Namespace) -> int:
 def cmd_demo(args: argparse.Namespace) -> int:
     from aosr.demo import write
 
-    out = write(_store(args), args.run, Path(args.grow_log).expanduser(), [Path(p).expanduser() for p in args.evals],
-                Path(args.out).expanduser(), args.title)  # fmt: skip
+    evals = [Path(p).expanduser() for p in args.evals]
+    grow_log = Path(args.grow_log).expanduser()
+    out = write(_store(args), args.run, grow_log, evals, Path(args.out).expanduser(), args.title, args.budget)
     print(out)
     return 0
 
@@ -224,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--epoch-every", type=int, default=0, help="kernel evolution every N stream tasks")
     g.add_argument("--engineer", default="haiku-think")
     g.add_argument("--window", type=int, default=20)
-    g.add_argument("--margin", type=int, default=2)
+    g.add_argument("--margin", type=int, default=3)
+    g.add_argument("--skip", type=int, default=0, help="start at this stream position (continuing a run)")
     g.add_argument("--out", required=True)
     e = add("eval", cmd_eval, "evaluate a frozen image on held-out tasks")
     e.add_argument("--world", default="arc", choices=["arc", "appworld"])
@@ -242,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(fn=cmd_report)
     r.add_argument("files", nargs="+")
     r.add_argument("--compare", action="append", help="A@budget,B@budget (file paths)")
+    r.add_argument("--budget", type=int, default=None, help="score every arm at this many model calls")
     s = add("show", cmd_show, "summarize an image and list its capabilities")
     s.add_argument("image")
     s.add_argument("--source", action="store_true")
@@ -260,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     dm.add_argument("--grow-log", required=True)
     dm.add_argument("--out", required=True)
     dm.add_argument("--title", default="")
+    dm.add_argument("--budget", type=int, default=None, help="score every arm at this many model calls")
     dm.add_argument("evals", nargs="*", help="evaluated arms (jsonl) to tabulate")
     lg = add("lineage", cmd_lineage, "list an image's ancestors")
     lg.add_argument("image")
