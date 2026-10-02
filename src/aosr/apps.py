@@ -53,7 +53,7 @@ print(apis.api_docs.show_api_doc(app_name="spotify", api_name="show_song_library
 Reply 3: Log in with the supervisor's email and password, then read every page.
 ```python
 passwords = {a["account_name"]: a["password"] for a in apis.supervisor.show_account_passwords()}
-token = apis.spotify.login(username="joyce-weav@gmail.com", password=passwords["spotify"])["access_token"]
+token = apis.spotify.login(username="alex.doe@example.com", password=passwords["spotify"])["access_token"]
 songs, page = [], 0
 while True:
     batch = apis.spotify.show_song_library(access_token=token, page_index=page, page_limit=20)
