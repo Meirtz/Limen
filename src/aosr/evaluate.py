@@ -9,16 +9,15 @@ Presolve attempts cost no call.
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from aosr import stats
-from aosr.domains import Task, World
-from aosr.kernel import Episode, Kernel, Settings
+from aosr.domains import Task
+from aosr.engine import Engine
+from aosr.kernel import Episode, Settings
 from aosr.llm import Model
-from aosr.sandbox import Sandbox
 from aosr.store import Image, Store
 
 
@@ -30,44 +29,51 @@ class Arm:
     settings: Settings
 
 
-def score_episode(world: World, task: Task, ep: Episode, budget: int) -> dict[str, Any]:
-    calls = 0
-    first: dict[str, Any] | None = None
-    for a in ep.attempts:
-        if a.call_key is not None:
-            calls += 1
-        if a.verified:
-            correct = bool(a.test_outputs) and all(world.judge(task, a.test_outputs))
-            first = {"at": calls, "correct": correct, "kind": a.kind, "used": sorted(a.used), "depth": a.depth}
-            break
-    solved_at = [bool(first and first["correct"] and first["at"] <= b) for b in range(budget + 1)]
+def score_episode(engine: Engine, task: Task, ep: Episode, budget: int) -> dict[str, Any]:
+    correct = engine.judge(task, ep)
+    at = engine.calls_to_solution(ep)
+    first = next((a for a in ep.attempts if a.verified), None)
+    solved_at = [bool(correct and at is not None and at <= b) for b in range(budget + 1)]
+    used = sorted(first.used) if first else sorted({n for a in ep.attempts for n in a.used})
     return {
         "task": task.id,
         "solved_at": solved_at,
+        "correct": correct,
         "calls": ep.calls,
         "in_tokens": sum(a.in_tokens for a in ep.attempts),
         "out_tokens": sum(a.out_tokens for a in ep.attempts),
         "usd": round(sum(a.usd for a in ep.attempts), 6),
         "errors": sum(1 for a in ep.attempts if a.status in ("llm_timeout", "infra_error")),
-        "first_verified": first,
+        "first_verified": {
+            "at": at,
+            "kind": first.kind if first else None,
+            "used": used,
+            "depth": max((a.depth for a in ep.attempts), default=0),
+        },
         "retrieved": ep.retrieved,
         "precedents": ep.precedents,
     }
 
 
-def run_arm(
-    store: Store, arm: Arm, tasks: list[Task], world: World, sandbox: Sandbox, out: Path, parallel: int = 10
-) -> list[dict[str, Any]]:
-    kernel = Kernel(world, sandbox)
+def run_arm(store: Store, arm: Arm, tasks: list[Task], engine: Engine, out: Path) -> list[dict[str, Any]]:
     image = Image(store, store.head(arm.image))
-    meta = {"arm": arm.name, "phase": "eval"}
-    with ThreadPoolExecutor(parallel) as ex:
-        eps = list(ex.map(lambda t: kernel.solve(t, image, arm.model, arm.settings, meta), tasks))
-    rows = [score_episode(world, t, e, arm.settings.budget) for t, e in zip(tasks, eps, strict=True)]
+    eps = engine.run(tasks, image, arm.model, arm.settings, {"arm": arm.name, "phase": "eval"})
+    rows = [score_episode(engine, t, e, arm.settings.budget) for t, e in zip(tasks, eps, strict=True)]
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as f:
-        f.write(json.dumps({"arm": arm.name, "image": arm.image, "model": arm.model.name,
-                            "budget": arm.settings.budget, "context": arm.settings.context}) + "\n")  # fmt: skip
+        f.write(
+            json.dumps(
+                {
+                    "arm": arm.name,
+                    "image": arm.image,
+                    "model": arm.model.name,
+                    "world": engine.name,
+                    "budget": arm.settings.budget,
+                    "context": arm.settings.context,
+                }
+            )
+            + "\n"
+        )
         for r, e in zip(rows, eps, strict=True):
             f.write(json.dumps({**r, "episode": e.to_json()}, default=str) + "\n")
     return rows
@@ -84,7 +90,7 @@ def summarize(header: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, A
     solved = sum(r["solved_at"][budget] for r in rows)
     calls = sum(r["calls"] for r in rows)
     usd = sum(r["usd"] for r in rows)
-    reuse = sum(1 for r in rows if r["solved_at"][budget] and r["first_verified"] and r["first_verified"]["used"])
+    reuse = sum(1 for r in rows if r["solved_at"][budget] and r["first_verified"]["used"])
     presolved = sum(1 for r in rows if r["solved_at"][budget] and r["first_verified"]["kind"] == "presolve")
     return {
         "arm": header["arm"],

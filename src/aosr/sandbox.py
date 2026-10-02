@@ -24,9 +24,26 @@ from typing import Any
 from aosr import config
 
 BANNED_NAMES = frozenset(
-    {"open", "exec", "eval", "compile", "input", "breakpoint", "exit", "quit", "help", "globals", "locals",
-     "vars", "memoryview", "__import__", "__builtins__", "__loader__", "__spec__"}
-)  # fmt: skip
+    {
+        "open",
+        "exec",
+        "eval",
+        "compile",
+        "input",
+        "breakpoint",
+        "exit",
+        "quit",
+        "help",
+        "globals",
+        "locals",
+        "vars",
+        "memoryview",
+        "__import__",
+        "__builtins__",
+        "__loader__",
+        "__spec__",
+    }
+)
 
 CHILD = r"""
 import builtins, json, signal, sys
@@ -208,8 +225,12 @@ class Sandbox:
             self._db.execute("CREATE TABLE IF NOT EXISTS results (key TEXT PRIMARY KEY, result TEXT)")
 
     def _child(self, req: dict[str, Any]) -> dict[str, Any]:
-        req = {**req, "allowed": list(self.allowed), "banned": sorted(BANNED_NAMES - {"__builtins__"}),
-               "call_s": self.call_s}  # fmt: skip
+        req = {
+            **req,
+            "allowed": list(self.allowed),
+            "banned": sorted(BANNED_NAMES - {"__builtins__"}),
+            "call_s": self.call_s,
+        }
         blob = json.dumps(req, sort_keys=True, ensure_ascii=False)
         key = hashlib.sha256(blob.encode()).hexdigest()
         if self._db is not None:
@@ -223,9 +244,14 @@ class Sandbox:
         wall = min(self.wall_s, 5.0 + self.call_s * n * k * 1.5)
         try:
             proc = subprocess.run(
-                [sys.executable, "-I", "-c", CHILD], input=blob, capture_output=True, text=True, timeout=wall,
-                env={"PYTHONHASHSEED": "0", "PATH": "/usr/bin:/bin"}, cwd=str(config.empty_cwd()),
-            )  # fmt: skip
+                [sys.executable, "-I", "-c", CHILD],
+                input=blob,
+                capture_output=True,
+                text=True,
+                timeout=wall,
+                env={"PYTHONHASHSEED": "0", "PATH": "/usr/bin:/bin"},
+                cwd=str(config.empty_cwd()),
+            )
             out: dict[str, Any] = json.loads(proc.stdout) if proc.stdout else {"error": proc.stderr[-300:] or "crash"}
         except subprocess.TimeoutExpired:
             out = {"error": f"Timeout: the sandbox exceeded {wall:.0f}s", "timeout": True}
@@ -240,9 +266,11 @@ class Sandbox:
     def _trace(d: dict[str, Any]) -> Trace:
         t = d.get("trace") or {}
         return Trace(
-            calls=dict(t.get("calls", {})), edges=[(a, b) for a, b in t.get("edges", [])],
-            max_depth=int(t.get("max_depth", 0)), records=dict(t.get("records", {})),
-        )  # fmt: skip
+            calls=dict(t.get("calls", {})),
+            edges=[(a, b) for a, b in t.get("edges", [])],
+            max_depth=int(t.get("max_depth", 0)),
+            records=dict(t.get("records", {})),
+        )
 
     def run(
         self,
@@ -259,8 +287,17 @@ class Sandbox:
         reason = check_source(program, self.allowed)
         if reason:
             return RunResult("rejected", [None] * len(inputs), [reason] * len(inputs), Trace(), reason)
-        d = self._child({"mode": "run", "library": library, "program": program, "entry": entry,
-                         "inputs": inputs, "trace": sorted(set(trace)), "record": sorted(set(record))})  # fmt: skip
+        d = self._child(
+            {
+                "mode": "run",
+                "library": library,
+                "program": program,
+                "entry": entry,
+                "inputs": inputs,
+                "trace": sorted(set(trace)),
+                "record": sorted(set(record)),
+            }
+        )
         if d.get("error") or "results" not in d:
             err = str(d.get("error") or "crash")
             status = "timeout" if d.get("timeout") else "crash"
@@ -285,6 +322,13 @@ class Sandbox:
         if not programs or not inputs:
             return {}
         config.empty_cwd().mkdir(parents=True, exist_ok=True)
-        d = self._child({"mode": "programs", "library": library, "programs": [list(p) for p in programs],
-                         "inputs": inputs, "entry": entry})  # fmt: skip
+        d = self._child(
+            {
+                "mode": "programs",
+                "library": library,
+                "programs": [list(p) for p in programs],
+                "inputs": inputs,
+                "entry": entry,
+            }
+        )
         return {p: [r.get("ok") for r in rs] for p, rs in (d.get("by_program") or {}).items()}

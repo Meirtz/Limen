@@ -131,8 +131,9 @@ class Admitter:
 
         # the whole program is kept as a precedent
         calls = sorted(n for n in attempt.used if n in head.caps)
-        out.program = self.store.put({"type": "program", "task": task.id, "src": src, "calls": calls,
-                                      "origin": {**origin, "position": position}})  # fmt: skip
+        out.program = self.store.put(
+            {"type": "program", "task": task.id, "src": src, "calls": calls, "origin": {**origin, "position": position}}
+        )
         head.programs[task.id] = out.program
         for n in calls:
             head.caps[n].uses += 1
@@ -170,10 +171,16 @@ class Admitter:
             doc = (ast.get_docstring(fn) or "").strip().splitlines()
             deps = sorted(m for m in free_loads(fn) if m in head.caps or m in {mapping.get(c, c) for c in closure})
             cap = {
-                "type": "cap", "name": new, "src": ast.unparse(fn), "imports": imports,
-                "doc": doc[0][:160] if doc else "(no docstring)", "sig": signature(fn), "arity": arity(fn),
-                "deps": [d for d in deps if d != new], "origin": {**origin, "task": task.id, "position": position},
-            }  # fmt: skip
+                "type": "cap",
+                "name": new,
+                "src": ast.unparse(fn),
+                "imports": imports,
+                "doc": doc[0][:160] if doc else "(no docstring)",
+                "sig": signature(fn),
+                "arity": arity(fn),
+                "deps": [d for d in deps if d != new],
+                "origin": {**origin, "task": task.id, "position": position},
+            }
             head.caps[new] = CapEntry(self.store.put(cap), ACTIVE, 0, position)
             out.added.append(new)
         return out

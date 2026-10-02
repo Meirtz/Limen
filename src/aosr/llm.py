@@ -184,9 +184,21 @@ class ClaudeCLI:
             raise LiveCallsDisabled("live model calls are disabled")
         key = cache_key(self.model, self.thinking, system, user, sample)
         argv = [
-            self.bin_path, "-p", "--model", self.model, "--tools", "", "--no-session-persistence",
-            "--setting-sources", "", "--strict-mcp-config", "--system-prompt", system, "--output-format", "json",
-        ]  # fmt: skip
+            self.bin_path,
+            "-p",
+            "--model",
+            self.model,
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--system-prompt",
+            system,
+            "--output-format",
+            "json",
+        ]
         self.cwd.mkdir(parents=True, exist_ok=True)
         status = "infra_error"
         t0 = time.monotonic()
@@ -194,9 +206,14 @@ class ClaudeCLI:
             try:
                 with _LIVE:
                     proc = subprocess.run(
-                        argv, input=user, capture_output=True, text=True, timeout=self.timeout_s,
-                        cwd=self.cwd, env=self._env(),
-                    )  # fmt: skip
+                        argv,
+                        input=user,
+                        capture_output=True,
+                        text=True,
+                        timeout=self.timeout_s,
+                        cwd=self.cwd,
+                        env=self._env(),
+                    )
             except subprocess.TimeoutExpired:
                 status = "timeout"
                 continue
@@ -220,9 +237,14 @@ class ClaudeCLI:
             )
             model_id = next(iter(d.get("modelUsage") or {}), self.model)
             return Completion(
-                text=d["result"], usage=usage, status="ok", key=key, model_id=model_id,
-                latency_s=time.monotonic() - t0, cli_usd=float(d.get("total_cost_usd") or 0.0),
-            )  # fmt: skip
+                text=d["result"],
+                usage=usage,
+                status="ok",
+                key=key,
+                model_id=model_id,
+                latency_s=time.monotonic() - t0,
+                cli_usd=float(d.get("total_cost_usd") or 0.0),
+            )
         return Completion("", Usage(), status, key, self.model, latency_s=time.monotonic() - t0)
 
 
@@ -235,6 +257,7 @@ class CachedModel:
         self.inner, self.cache, self.ledger = inner, cache, ledger
         self.model, self.thinking = model, thinking
         self.name = inner.name
+        self.spec: str | None = None
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
 
@@ -263,6 +286,7 @@ class ReplayModel:
     def __init__(self, cache: CallCache, *, model: str, thinking: bool, ledger: Ledger | None = None) -> None:
         self.cache, self.model, self.thinking, self.ledger = cache, model, thinking, ledger
         self.name = f"replay:{model}:{'think' if thinking else 'nothink'}"
+        self.spec: str | None = None
         self.calls = 0
 
     def complete(
@@ -306,10 +330,17 @@ def make_model(spec: str, *, cache: CallCache, ledger: Ledger | None = None) -> 
     if model is None or mode not in ("think", "nothink"):
         raise ValueError(f"unknown model spec {spec!r}")
     thinking = mode == "think"
+    built: ReplayModel | CachedModel
     if replay:
-        return ReplayModel(cache, model=model, thinking=thinking, ledger=ledger)
-    cli = ClaudeCLI(
-        model, thinking, bin_path=config.claude_bin(), cwd=config.empty_cwd(),
-        timeout_s=config.TIMEOUT_THINK_S if thinking else config.TIMEOUT_NOTHINK_S,
-    )  # fmt: skip
-    return CachedModel(cli, cache, model=model, thinking=thinking, ledger=ledger)
+        built = ReplayModel(cache, model=model, thinking=thinking, ledger=ledger)
+    else:
+        cli = ClaudeCLI(
+            model,
+            thinking,
+            bin_path=config.claude_bin(),
+            cwd=config.empty_cwd(),
+            timeout_s=config.TIMEOUT_THINK_S if thinking else config.TIMEOUT_NOTHINK_S,
+        )
+        built = CachedModel(cli, cache, model=model, thinking=thinking, ledger=ledger)
+    built.spec = spec  # lets worker processes rebuild the same model
+    return built

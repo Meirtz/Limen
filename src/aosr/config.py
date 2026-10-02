@@ -19,9 +19,21 @@ TIMEOUT_THINK_S = 600.0
 PARALLEL = 10
 
 ALLOWED_IMPORTS = (
-    "bisect", "collections", "copy", "dataclasses", "enum", "functools", "heapq", "itertools", "math",
-    "operator", "re", "statistics", "string", "typing",
-)  # fmt: skip
+    "bisect",
+    "collections",
+    "copy",
+    "dataclasses",
+    "enum",
+    "functools",
+    "heapq",
+    "itertools",
+    "math",
+    "operator",
+    "re",
+    "statistics",
+    "string",
+    "typing",
+)
 
 
 def _path(var: str, default: str) -> Path:
@@ -34,6 +46,10 @@ def home() -> Path:
 
 def data_dir() -> Path:
     return _path("AOSR_DATA", str(home() / "data"))
+
+
+def appworld_root() -> Path:
+    return _path("APPWORLD_ROOT", str(home() / "awroot"))
 
 
 def llm_cache_path() -> Path:

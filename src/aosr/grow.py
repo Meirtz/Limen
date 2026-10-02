@@ -1,25 +1,23 @@
-"""Growth: run the task stream through the kernel and let verified experience extend the image.
+"""Growth: run the task stream through an engine and let verified experience extend the image.
 
-Tasks are processed in batches against a fixed image; admissions from a batch are applied in stream
-order before the next batch starts, and each batch commits a new image whose parent is the previous
-one. Model calls and sandbox results are cached, so a growth run replays exactly.
+Tasks are processed in batches against a fixed image. What the batch's solved tasks contribute is
+prepared against that image, then applied in stream order; each batch commits a new image whose
+parent is the previous one. Model calls and sandbox results are cached, so a growth run replays
+exactly.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
-from functools import partial
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aosr.admit import Admitter
-from aosr.domains import Task, World
-from aosr.kernel import Episode, Kernel, Settings
+from aosr.domains import Task
+from aosr.engine import Engine
+from aosr.kernel import Episode, Settings
 from aosr.llm import Model
-from aosr.sandbox import Sandbox
 from aosr.store import Head, Image, Store
 
 
@@ -45,77 +43,74 @@ def grow(
     store: Store,
     start: str,
     stream: list[Task],
-    world: World,
+    engine: Engine,
     model: Model,
-    sandbox: Sandbox,
     out_dir: Path,
     cfg: GrowConfig,
     progress: Callable[[str], None] = print,
 ) -> str:
     """Grow from image ``start`` over ``stream``; return the final image digest."""
-    kernel = Kernel(world, sandbox)
-    admitter = Admitter(store, sandbox)
     settings = cfg.settings or Settings()
     head = store.head(start)
     head.parent, digest = start, start
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / "grow.jsonl"
-    done = _done(log_path)
-    if done:  # resume: replay the logged positions from the caches
-        progress(f"resuming after {len(done)} logged tasks (calls replay from the cache)")
     log_path.write_text("")
     solved = 0
+    meta = {"run": cfg.run, "phase": "grow"}
     for i in range(0, len(stream), cfg.batch):
         batch = stream[i : i + cfg.batch]
         image = Image(store, head.copy())
-        meta = {"run": cfg.run, "phase": "grow"}
-        with ThreadPoolExecutor(len(batch)) as ex:
-            episodes = list(
-                ex.map(partial(kernel.solve, image=image, model=model, settings=settings, meta=meta), batch)
-            )
-        for j, (task, ep) in enumerate(zip(batch, episodes, strict=True)):
+        episodes = engine.run(batch, image, model, settings, meta)
+        verdicts = [engine.judge(t, e) for t, e in zip(batch, episodes, strict=True)]
+        good = [(t, e, i + j) for j, (t, e, ok) in enumerate(zip(batch, episodes, verdicts, strict=True)) if ok]
+        prepared = engine.contribute(image, good, model, meta)  # one per solved task, in order
+        contributions = {t.id: c for (t, _, _), c in zip(good, prepared, strict=True)}
+        for j, (task, ep, ok) in enumerate(zip(batch, episodes, verdicts, strict=True)):
             pos = i + j
-            att = ep.verified
-            correct = bool(att and att.test_outputs and all(world.judge(task, att.test_outputs)))
-            rec: dict[str, Any] = {"position": pos, "task": task.id, "verified": att is not None, "correct": correct,
-                                   "calls": ep.calls, "presolved": bool(att and att.kind == "presolve")}  # fmt: skip
-            if att is not None and correct:
+            rec: dict[str, Any] = {
+                "position": pos,
+                "task": task.id,
+                "correct": ok,
+                "calls": ep.calls,
+                "presolved": any(a.kind == "presolve" and a.verified for a in ep.attempts),
+            }
+            if ok:
                 solved += 1
-                adm = admitter.admit(head, task, att, pos, {"run": cfg.run, "call": att.call_key or "presolve"})
-                rec["admission"] = asdict(adm)
-                store.log({"kind": "admit", "run": cfg.run, **rec})
+                rec["admission"] = engine.apply(head, contributions[task.id], {"run": cfg.run})
+                store.log(
+                    {"kind": "admit", "run": cfg.run, "position": pos, "task": task.id, "admission": rec["admission"]}
+                )
             rec["episode"] = ep.to_json()
             with log_path.open("a") as f:
                 f.write(json.dumps(rec, default=str) + "\n")
         head.seq += 1
-        head.note = f"{cfg.run}: after {i + len(batch)} stream tasks"
+        end = i + len(batch)
+        head.note = f"{cfg.run}: after {end} stream tasks"
         digest = store.commit(head)
         head.parent = digest
-        end = i + len(batch)
         store.set_ref(f"{cfg.run}/latest", digest)
         for c in cfg.checkpoints:
             if i < c <= end:
                 store.set_ref(f"{cfg.run}/n{c}", digest)
         s = Image(store, head).summary()
-        progress(f"grow {end}/{len(stream)}: solved {solved}, capabilities {s['capabilities']}, "
-                 f"programs {s['programs']}, depth {s['max_depth']}")  # fmt: skip
+        progress(
+            f"grow {end}/{len(stream)}: solved {solved}, capabilities {s['capabilities']}, "
+            f"programs {s['programs']}, depth {s['max_depth']}"
+        )
     store.set_ref(f"{cfg.run}/n{len(stream)}", digest)
     return digest
 
 
-def _done(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-
 def episodes_of(path: Path) -> list[Episode]:
-    """Load logged episodes (records are dropped in the log)."""
+    """Load logged episodes (bulky call records are not logged)."""
     from aosr.kernel import Attempt
 
     out = []
-    for rec in _done(path):
-        e = rec["episode"]
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        e = json.loads(line)["episode"]
         atts = [Attempt(**{**a, "edges": [tuple(x) for x in a["edges"]]}) for a in e["attempts"]]
         out.append(Episode(e["task"], atts, e.get("retrieved", []), e.get("precedents", [])))
     return out

@@ -87,6 +87,8 @@ class Episode:
     attempts: list[Attempt]
     retrieved: list[str] = field(default_factory=list)
     precedents: list[str] = field(default_factory=list)
+    success: bool | None = None  # set by worlds that judge the whole episode (AppWorld)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def verified(self) -> Attempt | None:
@@ -211,9 +213,17 @@ class Kernel:
         outs, errs = res.outputs[:n], res.errors[:n]
         train_ok = [e is None and o == w for o, e, w in zip(outs, errs, task.train_outputs, strict=True)]
         a = Attempt(
-            index, kind, source, res.status, train_ok, res.outputs[n:], used=res.trace.calls,
-            depth=res.trace.max_depth, edges=res.trace.edges, records=res.trace.records,
-        )  # fmt: skip
+            index,
+            kind,
+            source,
+            res.status,
+            train_ok,
+            res.outputs[n:],
+            used=res.trace.calls,
+            depth=res.trace.max_depth,
+            edges=res.trace.edges,
+            records=res.trace.records,
+        )
         return a, outs, errs
 
     def solve(
@@ -239,9 +249,12 @@ class Kernel:
             repair = i % 2 == 1 and prev is not None
             user = self.user_prompt(task, context, prev if repair else None, feedback)
             c = model.complete(
-                system, user, sample=settings.sample_offset + i, role="worker",
+                system,
+                user,
+                sample=settings.sample_offset + i,
+                role="worker",
                 meta={**(meta or {}), "task": task.id, "attempt": str(i)},
-            )  # fmt: skip
+            )
             kind = "repair" if repair else "synth"
             src = code_of(c.text) if c.ok else None
             if src is None:
