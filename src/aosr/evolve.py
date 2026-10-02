@@ -9,13 +9,14 @@ its evidence, and an accepted version becomes part of the next image.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, replace
 from typing import Any
 
 from aosr.domains import Task
 from aosr.engine import Engine
-from aosr.kernel import Episode, Settings
+from aosr.kernel import POLICY, Episode, Settings
 from aosr.llm import Model
 from aosr.store import Head, Image, Store
 
@@ -24,7 +25,9 @@ ENGINEER = (
     "instructions for every task in this world. Write notes that would have prevented the recent failures "
     "without breaking the successes: concrete, general procedures and checks (never task-specific answers, ids "
     "or names). Keep what still helps from the current notes. At most 250 words, plain text, as a numbered "
-    "list.\nReply with the complete new notes between <notes> and </notes>."
+    "list.\nReply with the complete new notes between <notes> and </notes>. You may also retune the kernel policy "
+    "(how much of the system's library and earlier programs the worker is shown) by giving a JSON object between "
+    "<policy> and </policy>; omit it to keep the current policy."
 )
 
 
@@ -36,6 +39,7 @@ class EpochResult:
     window: list[str]
     notes: str
     cost_usd: float
+    policy: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -44,6 +48,7 @@ class EpochResult:
             "new": self.new,
             "window": self.window,
             "notes": self.notes,
+            "policy": self.policy,
             "cost_usd": round(self.cost_usd, 4),
         }
 
@@ -52,13 +57,27 @@ def notes_of(image: Image) -> str:
     return image.slot_source("notes") or ""
 
 
-def propose(engineer: Model, world: str, current: str, digests: list[str], meta: dict[str, str]) -> tuple[str, float]:
-    user = f"World: {world}\n\nCURRENT NOTES:\n{current or '(none yet)'}\n\nRECENT EPISODES:\n\n" + "\n\n---\n\n".join(
-        digests
+def propose(
+    engineer: Model, engine: Engine, current: str, policy: str, digests: list[str], meta: dict[str, str]
+) -> tuple[str, str, float]:
+    """Ask the engineer for new notes and, optionally, a new kernel policy (JSON)."""
+    user = (
+        f"World: {engine.name}\n\nCURRENT NOTES:\n{current or '(none yet)'}\n\n"
+        f"KERNEL POLICY (current values: {policy or 'defaults'}):\n{engine.policy_doc}\n\n"
+        "RECENT EPISODES:\n\n" + "\n\n---\n\n".join(digests)
     )
     c = engineer.complete(ENGINEER, user, sample=0, role="engineer", meta=meta)
-    m = re.search(r"<notes>(.*?)</notes>", c.text, re.S) if c.ok else None
-    return (m.group(1).strip() if m else ""), c.usd()
+    notes = re.search(r"<notes>(.*?)</notes>", c.text, re.S) if c.ok else None
+    pol = re.search(r"<policy>(.*?)</policy>", c.text, re.S) if c.ok else None
+    new_policy = ""
+    if pol:
+        try:
+            d = json.loads(pol.group(1))
+            if isinstance(d, dict):
+                new_policy = json.dumps({k: v for k, v in sorted(d.items()) if k in POLICY})
+        except json.JSONDecodeError:
+            new_policy = ""
+    return (notes.group(1).strip() if notes else current), (new_policy or policy), c.usd()
 
 
 def solved(engine: Engine, tasks: list[Task], eps: list[Episode]) -> int:
@@ -78,13 +97,16 @@ def epoch(
     margin: int = 2,
 ) -> EpochResult:
     """Propose new notes from ``recent`` and gate them on ``window``; mutate ``head`` if accepted."""
-    current = notes_of(Image(store, head))
+    image = Image(store, head)
+    current, policy = notes_of(image), image.slot_source("policy") or ""
     digests = [engine.digest(t, e) for t, e in recent]
-    proposal, cost = propose(engineer, engine.name, current, digests, {**meta, "phase": "evolve"})
-    if not proposal or proposal == current:
-        return EpochResult(False, 0, 0, [t.id for t in window], proposal, cost)
+    proposal, new_policy, cost = propose(engineer, engine, current, policy, digests, {**meta, "phase": "evolve"})
+    if (proposal, new_policy) == (current, policy) or not proposal:
+        return EpochResult(False, 0, 0, [t.id for t in window], proposal, cost, new_policy)
     candidate = head.copy()
     candidate.slots["notes"] = store.put({"type": "slot", "slot": "notes", "src": proposal, "origin": meta})
+    if new_policy:
+        candidate.slots["policy"] = store.put({"type": "slot", "slot": "policy", "src": new_policy, "origin": meta})
     ab = replace(settings, sample_offset=settings.sample_offset + 7000 + head.seq * 100)
     old_eps = engine.run(window, Image(store, head.copy()), worker, ab, {**meta, "phase": "evolve-old"})
     new_eps = engine.run(window, Image(store, candidate), worker, ab, {**meta, "phase": "evolve-new"})
@@ -92,5 +114,5 @@ def epoch(
     cost += sum(a.usd for e in old_eps + new_eps for a in e.attempts)
     accepted = new >= old + margin
     if accepted:
-        head.slots["notes"] = candidate.slots["notes"]
-    return EpochResult(accepted, old, new, [t.id for t in window], proposal, cost)
+        head.slots = dict(candidate.slots)
+    return EpochResult(accepted, old, new, [t.id for t in window], proposal, cost, new_policy)

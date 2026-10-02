@@ -109,6 +109,7 @@ def grow(
                 failed[:6] + passed[:2],
                 settings,
                 {"run": cfg.run, "epoch": str(end)},
+                margin=cfg.margin,
             )
             store.log({"kind": "epoch", "run": cfg.run, "position": end, **result.to_json()})
             with log_path.open("a") as f:

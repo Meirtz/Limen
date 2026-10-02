@@ -15,8 +15,9 @@ and the dynamic call graph of library functions it executed.
 from __future__ import annotations
 
 import ast
+import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from aosr import config
@@ -56,6 +57,34 @@ class Settings:
     precedent_k: int = 2
     precedent_min: float = 0.5
     sample_offset: int = 0  # separates independent samples of the same prompt across arms
+
+
+# kernel parameters the system may retune itself (the image's "policy" slot), with their allowed ranges
+POLICY = {
+    "index_lines": (0, 100),
+    "retrieve_k": (0, 10),
+    "retrieve_min": (0.0, 1.0),
+    "precedent_k": (0, 5),
+    "precedent_min": (0.0, 1.0),
+}
+
+
+def with_policy(settings: Settings, policy_src: str | None) -> Settings:
+    """Settings overridden by an image's policy slot (JSON); unknown keys and bad values are ignored."""
+    if not policy_src:
+        return settings
+    try:
+        d = json.loads(policy_src)
+    except json.JSONDecodeError:
+        return settings
+    if not isinstance(d, dict):
+        return settings
+    upd: dict[str, Any] = {}
+    for k, (lo, hi) in POLICY.items():
+        v = d.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            upd[k] = type(lo)(min(max(v, lo), hi))
+    return replace(settings, **upd)
 
 
 @dataclass
@@ -233,6 +262,7 @@ class Kernel:
     def solve(
         self, task: Task, image: Image, model: Model, settings: Settings, meta: dict[str, str] | None = None
     ) -> Episode:
+        settings = with_policy(settings, image.slot_source("policy"))
         library = image.library_source()
         use_helpers = settings.context in ("full", "helpers")
         use_programs = settings.context in ("full", "precedents")

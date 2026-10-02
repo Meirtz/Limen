@@ -25,7 +25,7 @@ from typing import Any
 
 from aosr import config
 from aosr.domains import Task
-from aosr.kernel import Attempt, Episode, Settings
+from aosr.kernel import Attempt, Episode, Settings, with_policy
 from aosr.llm import CallCache, Ledger, Model, make_model
 from aosr.store import ACTIVE, CapEntry, Head, Image, Store
 
@@ -99,27 +99,39 @@ def words(text: str) -> set[str]:
     return set(WORDS.findall(text.lower().replace("_", " ")))
 
 
-def context_text(index: list[dict[str, Any]], precedents: list[dict[str, Any]], instruction: str) -> str:
+def context_text(
+    index: list[dict[str, Any]],
+    precedents: list[dict[str, Any]],
+    instruction: str,
+    policy: dict[str, Any] | None = None,
+) -> str:
     """Library index ranked by word overlap with the task, the top sources, and the closest solved task."""
+    policy = policy or {}
+    lines_n, top_k, prec_k = policy.get("index_lines", 40), policy.get("retrieve_k", 3), policy.get("precedent_k", 1)
     parts = []
     w = words(instruction)
-    if index:
+    if index and (lines_n or top_k):
         ranked = sorted(index, key=lambda c: (-len(w & words(c["name"] + " " + c["doc"])), -c["uses"], c["name"]))
-        lines = "\n".join(f"- {c['sig']}: {c['doc']} [reused in {c['uses']} later tasks]" for c in ranked[:40])
-        top = "\n\n".join(c["src"] for c in ranked[:3])
+        lines = "\n".join(f"- {c['sig']}: {c['doc']} [reused in {c['uses']} later tasks]" for c in ranked[:lines_n])
+        top = "\n\n".join(c["src"] for c in ranked[:top_k])
         parts.append(
             "LIBRARY: functions this system wrote while solving earlier tasks; they are already defined in the shell. "
             "Each was right for the task it came from but may not fit this one exactly: read its code, print what it "
             "returns, and use the raw APIs when a result looks empty or wrong.\n"
             f"{lines}\n\nMost relevant library code:\n```python\n{top}\n```"
         )
-    if precedents:
+    if precedents and prec_k:
         best = max(precedents, key=lambda p: (len(w & words(p["instruction"])), p["task"]))
         if len(w & words(best["instruction"])) >= 3:
             parts.append(
                 f'A similar task solved earlier: "{best["instruction"]}"\nIts solution:\n```python\n{best["src"]}\n```'
             )
     return "\n\n".join(parts)
+
+
+def _policy_dict(src: str | None) -> dict[str, Any]:
+    s = with_policy(Settings(), src)
+    return {"index_lines": s.index_lines, "retrieve_k": s.retrieve_k, "precedent_k": s.precedent_k}
 
 
 def _appworld() -> Any:
@@ -146,9 +158,9 @@ def episode_job(job: dict[str, Any]) -> dict[str, Any]:
             f"\n{world.task.instruction}"
         )
         others = [p for p in job["precedents"] if p["task"] != job["task"]]
-        ctx = context_text(job["index"], others, world.task.instruction) if job["show"] else ""
+        ctx = context_text(job["index"], others, world.task.instruction, job.get("policy")) if job["show"] else ""
         system = SYSTEM
-        if job["notes"]:
+        if job.get("notes"):
             system += "\n\nOperating notes (written by this system from its own experience):\n" + job["notes"]
         history: list[tuple[str, str]] = []
         for turn in range(job["turns"]):
@@ -268,6 +280,11 @@ class AppEngine:
     """AppWorld episodes and growth, run in worker processes."""
 
     name = "appworld"
+    policy_doc = (
+        "index_lines (0-100): library functions listed by signature and docstring (0 hides the list). "
+        "retrieve_k (0-10): most relevant library functions shown with full source. "
+        "precedent_k (0-5): 0 hides, 1 or more shows, the most similar earlier solved task and its program."
+    )
 
     def __init__(self, store: Store, data_root: Path, parallel: int = 10) -> None:
         self.store, self.root, self.parallel = store, data_root, parallel
@@ -307,6 +324,7 @@ class AppEngine:
             "index": index,
             "precedents": precedents,
             "notes": image.slot_source("notes") or "",
+            "policy": _policy_dict(image.slot_source("policy")),
             "meta": meta,
             "experiment": f"aosr-{tag}",
         }

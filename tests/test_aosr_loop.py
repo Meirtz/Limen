@@ -240,3 +240,25 @@ def test_context_modes_select_parts_of_the_image(world: Arc, tmp_path: Path) -> 
     assert "LIBRARY" not in progs and "CLOSEST PROGRAMS" in progs and retrieved == []
     ep = kernel.solve(task, image, FakeModel(oracle()), Settings(context="none", budget=1))
     assert all(a.kind != "presolve" for a in ep.attempts), "the none arm gets no presolve either"
+
+
+def test_policy_slot_is_clamped_and_retunes_the_kernel(world: Arc, tmp_path: Path) -> None:
+    from aosr.kernel import with_policy
+
+    s = with_policy(Settings(), '{"index_lines": 500, "retrieve_min": -1, "precedent_k": 0, "bogus": 3}')
+    assert (s.index_lines, s.retrieve_min, s.precedent_k) == (100, 0.0, 0)
+    assert with_policy(Settings(), "not json") == Settings() == with_policy(Settings(), None)
+
+    store = Store(tmp_path / "store")
+    sb = Sandbox(None)
+
+    def worker(system: str, user: str, sample: int, role: str) -> str:
+        return "```python\ndef solve(grid):\n    return grid\n```"
+
+    reply = '<notes>1. Look closely.</notes><policy>{"index_lines": 0, "precedent_k": 0}</policy>'
+    cfg = GrowConfig(batch=2, epoch_every=2, engineer=FakeModel(lambda s, u, k, r: reply), window=2, margin=0)
+    final = grow(store, boot(store), tasks(world, STREAM)[:2], ArcEngine(store, sb, world), FakeModel(worker),
+                 tmp_path / "g", cfg, progress=lambda s: None)  # fmt: skip
+    image = Image(store, store.head(final))
+    assert json.loads(image.slot_source("policy") or "{}") == {"index_lines": 0, "precedent_k": 0}
+    assert image.slot_source("notes") == "1. Look closely."

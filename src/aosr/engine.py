@@ -22,6 +22,7 @@ from aosr.store import Head, Image, Store
 
 class Engine(Protocol):
     name: str
+    policy_doc: str  # what the kernel policy knobs mean in this world
 
     def load(self, split: str, n: int | None = None, offset: int = 0) -> list[Task]: ...
 
@@ -56,6 +57,12 @@ class ArcEngine:
     """ARC-AGI-1: write ``solve(grid)``; verify on the example pairs; judge on the held-back test pairs."""
 
     name = "arc"
+    policy_doc = (
+        "index_lines (0-100): library functions listed by name and docstring (0 hides the list). "
+        "retrieve_k (0-10) and retrieve_min (0-1): library functions whose outputs come closest on the examples, "
+        "shown in full, and the share of example cells they must get right. precedent_k (0-5) and precedent_min "
+        "(0-1): earlier solved programs shown in full, and the share of example cells they must get right here."
+    )
 
     def __init__(self, store: Store, sandbox: Sandbox, world: Arc | None = None, parallel: int = 10) -> None:
         self.store, self.sandbox = store, sandbox
