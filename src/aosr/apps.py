@@ -36,7 +36,8 @@ How to work, one step at a time:
 - Passwords: print(apis.supervisor.show_account_passwords()). Log in with apis.<app>.login(username=<email, or phone number for the phone app>, password=...) and pass the returned access_token to later calls.
 - List APIs are paginated: call them with page_index=0, 1, 2, ... until a page comes back empty.
 - Verify facts with the APIs; never guess values.
-- When the task is done, call apis.supervisor.complete_task(answer=...) if it asks a question, else apis.supervisor.complete_task().
+- When the task is done, call apis.supervisor.complete_task(answer=...) only if the task asks a question (a short value such as a number or a name); for any other task call apis.supervisor.complete_task() with no answer.
+- Check every result before relying on it: an empty list or a zero where data is expected means you called the wrong API or missed a page.
 
 Example, for a different task ("How many songs are in my Spotify song library?"):
 Reply 1: I need the Spotify APIs.
@@ -68,7 +69,7 @@ apis.supervisor.complete_task(answer=len(songs))
 
 CONSOLIDATE = """Below is code that just completed an app task successfully (the cells ran in order in one shell).
 Rewrite it as reusable library code:
-- small, general helper functions that would help with OTHER users' similar tasks: each takes `apis` as its first parameter, has a one-line docstring, and hard-codes no user names, emails, ids, dates or answers (take them as parameters; look up credentials and the user's profile with apis.supervisor inside the helper when needed);
+- small, general helper functions that would help with OTHER users' similar tasks: each takes `apis` as its first parameter, has a one-line docstring that states exactly what it returns and which apis.<app>.<api> calls it makes, and hard-codes no user names, emails, ids, dates or answers (take them as parameters; look up credentials and the user's profile with apis.supervisor inside the helper when needed);
 - then def solve(apis): that completes exactly this task by calling the helpers, ending with apis.supervisor.complete_task(...).
 Library functions listed above already exist: call them instead of rewriting them.
 Reply with exactly one ```python block containing the new helpers and solve."""
@@ -104,11 +105,13 @@ def context_text(index: list[dict[str, Any]], precedents: list[dict[str, Any]], 
     w = words(instruction)
     if index:
         ranked = sorted(index, key=lambda c: (-len(w & words(c["name"] + " " + c["doc"])), -c["uses"], c["name"]))
-        lines = "\n".join(f"- {c['sig']}: {c['doc']}" for c in ranked[:40])
+        lines = "\n".join(f"- {c['sig']}: {c['doc']} [reused in {c['uses']} later tasks]" for c in ranked[:40])
         top = "\n\n".join(c["src"] for c in ranked[:3])
         parts.append(
-            "LIBRARY (already defined in the shell and verified on earlier tasks; call these directly, do not "
-            f"redefine them):\n{lines}\n\nMost relevant library code:\n```python\n{top}\n```"
+            "LIBRARY: functions this system wrote while solving earlier tasks; they are already defined in the shell. "
+            "Each was right for the task it came from but may not fit this one exactly: read its code, print what it "
+            "returns, and use the raw APIs when a result looks empty or wrong.\n"
+            f"{lines}\n\nMost relevant library code:\n```python\n{top}\n```"
         )
     if precedents:
         best = max(precedents, key=lambda p: (len(w & words(p["instruction"])), p["task"]))
@@ -142,7 +145,8 @@ def episode_job(job: dict[str, Any]) -> dict[str, Any]:
             f"Task (from {sup['first_name']} {sup['last_name']}, email {sup['email']}, phone {sup['phone_number']}):"
             f"\n{world.task.instruction}"
         )
-        ctx = context_text(job["index"], job["precedents"], world.task.instruction) if job["show"] else ""
+        others = [p for p in job["precedents"] if p["task"] != job["task"]]
+        ctx = context_text(job["index"], others, world.task.instruction) if job["show"] else ""
         system = SYSTEM
         if job["notes"]:
             system += "\n\nOperating notes (written by this system from its own experience):\n" + job["notes"]
