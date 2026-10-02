@@ -181,6 +181,15 @@ def cmd_slot(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_demo(args: argparse.Namespace) -> int:
+    from aosr.demo import write
+
+    out = write(_store(args), args.run, Path(args.grow_log).expanduser(), [Path(p).expanduser() for p in args.evals],
+                Path(args.out).expanduser(), args.title)  # fmt: skip
+    print(out)
+    return 0
+
+
 def cmd_lineage(args: argparse.Namespace) -> int:
     store = _store(args)
     for d in store.lineage(store.resolve(args.image)):
@@ -246,6 +255,12 @@ def main(argv: list[str] | None = None) -> int:
     sl.add_argument("slot", choices=["notes", "policy"])
     sl.add_argument("value")
     sl.add_argument("--ref", default="")
+    dm = add("demo", cmd_demo, "write an HTML page showing how a run's image grew")
+    dm.add_argument("--run", required=True)
+    dm.add_argument("--grow-log", required=True)
+    dm.add_argument("--out", required=True)
+    dm.add_argument("--title", default="")
+    dm.add_argument("evals", nargs="*", help="evaluated arms (jsonl) to tabulate")
     lg = add("lineage", cmd_lineage, "list an image's ancestors")
     lg.add_argument("image")
     args = p.parse_args(argv)
