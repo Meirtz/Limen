@@ -118,12 +118,17 @@ def cmd_report(args: argparse.Namespace) -> int:
     arms = {key(p): load_arm(Path(p).expanduser()) for p in args.files}
     print("| arm | n | budget | solved | rate | by budget | calls | USD | USD/solve | with library | presolved |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
+    warnings = []
     for h, rows in arms.values():
         s = summarize(h, rows, args.budget)
+        if s["errors"]:
+            warnings.append(f"WARNING: {s['arm']} had {s['errors']} failed model calls; its results understate it")
         print(
             f"| {s['arm']} | {s['n']} | {s['budget']} | {s['solved']} | {s['rate']:.3f} | {s['by_budget'][1:]} | "
             f"{s['calls']} | {s['usd']:.2f} | {s['usd_per_solve']} | {s['solved_with_library']} | {s['presolved']} |"
         )
+    for w in warnings:
+        print(w)
     for spec in args.compare or []:
         a, b = spec.split(",")
         (pa, ba), (pb, bb) = (x.rsplit("@", 1) for x in (a, b))

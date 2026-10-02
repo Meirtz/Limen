@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "limen"
 dynamic = ["version"]
-description = "Check that an experiment ran the way it claims: treatment applied, nothing else changed, gates that can fail, no held-out leaks."
+description = "AOSR, an agent operating system that grows its own capabilities, memory and kernel from an empty image; with Limen, a checker that experiments ran the way they claim."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Lingrui Mei" }]
-keywords = ["experiments", "reproducibility", "provenance", "validity", "agents", "machine-learning"]
+keywords = ["agents", "self-improvement", "program-synthesis", "arc-agi", "appworld", "experiments", "reproducibility"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",

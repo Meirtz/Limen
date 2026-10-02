@@ -1,145 +1,163 @@
-# Limen
+# AOSR
 
-**Limen checks that an experiment ran the way it claims.**
+**An agent operating system that grows itself from an empty image.**
 
-When coding agents run the experimental loop (editing code, launching runs, reading the numbers,
-reporting the result), most of what goes wrong is not sabotage. It is a number that does not mean
-what it says:
+AOSR boots with nothing in it. As a model works through a stream of tasks, AOSR keeps what it
+learns in a form it can run:
 
-- the treatment never executed (a stale copy of the package shadowed the edited one, or a
-  variable was misspelled);
-- the arms differed in more than the treatment (a config was edited between runs, the data was
-  regenerated);
-- one arm's items crashed or failed to parse and were counted as failures;
-- a gate was skipped, or could not fail;
-- held-out data leaked into training or selection.
+- **capabilities**: functions the model wrote that a verified solution could not do without.
+  They are loaded into every later task, and every call to them is traced;
+- **programs**: whole solutions that worked. On a new task AOSR runs them against the task's
+  examples and shows the model the closest ones; when one already fits, the task is solved with no
+  model call at all;
+- **its own kernel**: operating notes and a retrieval policy that AOSR rewrites from its failures.
+  A rewrite is kept only if it solves more of the same recent tasks than the version it replaces.
 
-Limen records what a Python run actually executed and checks it against what the run declared.
-It is a small library and CLI with no dependencies. It observes and reports; it does not run your
-experiments or change what they do.
+Every state is a content-addressed image with a parent. You can boot an image, diff it, knock
+capabilities out of it, or replay how it grew. Model calls and sandbox runs are cached, so a growth
+run replays exactly, offline.
 
-## Install
+## Results
+
+All numbers come from a small, cheap model (Claude Haiku 4.5 with extended thinking off) working
+through each image. They are compared with the same model working from the empty image, on
+held-out tasks no growth run read, at the same number of model calls. Intervals are paired
+bootstrap 95% intervals over tasks.
+
+**ARC-AGI-1, 400 evaluation tasks.** Two model calls per task (write a program, then repair it
+once).
+
+| image | solved | model calls | USD (list price) |
+|---|---|---|---|
+| empty (`head_0`) | 35 | 774 | 5.45 |
+| grown by the same model on 200 training tasks | **45** (+2.5 pts, 95% CI [+0.3, +4.8]) | 766 | 6.06 |
+| empty image, four calls per task | 44 | 1490 | 10.65 |
+
+The grown image matches the empty image given twice the calls, at 57% of the cost. Four of its 45
+solutions needed no model call: a program grown on a training task already fit.
+
+**AppWorld, 57 dev tasks** (an ecosystem of nine apps behind 457 APIs; tasks are judged by the
+benchmark's own state checks). Up to 20 turns per task.
+
+| image | solved by turn 8 | by turn 12 | by turn 20 | model calls |
+|---|---|---|---|---|
+| empty | 11 | 15 | 21 | 646 |
+| grown on 90 training tasks | **17** (+10.5 pts, [0.0, +21.1]) | **22** (+12.3 pts, [0.0, +24.6]) | 24 (+5.3 pts, [−5.3, +15.8]) | 407 |
+
+The grown image solves in 11 turns what the empty one solves in 20, with 37% fewer calls. It grew
+58 capabilities up to three layers deep: account and login services, a paginator, readers for each
+app's libraries, and task-level operations built on those.
+
+**The kernel rewrites itself.** In a 200-task ARC growth run with an evolution step every 50 tasks,
+three of four proposed kernel rewrites passed the A/B gate. The operating notes the system wrote
+for itself grew from "describe the rule, check it on every example, trace the code by hand" to
+rules targeted at its own observed failures, such as never submitting code with undefined helpers.
+At the last step it also retuned its retrieval policy. It now shows up to three earlier programs,
+but only those that already get at least 80% of the example cells right. That is the same lesson
+the over-trust failures below teach. In AppWorld none of three proposals passed.
+
+The rewrites did not measurably help on held-out tasks. On the 100 dev tasks the evolved image
+solved 34, and its notes alone on the empty image solved 31, against 36 and 33 in two runs of the
+empty image. The gate accepts what helped on 30 recent stream tasks, and at that window size it
+cannot tell a real improvement from noise (see below).
+
+### What did not work
+
+These results are reported as measured.
+
+- **A library shown indiscriminately hurts.** On the 100 dev tasks, an image whose index listed
+  three unrelated helpers solved 26 against 36 for the empty image. The model called a helper
+  whose name sounded right but whose result was wrong. With the index hidden it solved 32.
+- **In AppWorld the model over-trusted grown helpers.** In a first run, helpers told it to "call
+  directly" led it to finish in one to four turns with wrong answers (20 solved against 24).
+  Telling it that each helper was right for the task it came from but may not fit this one, and
+  showing reuse counts, reversed this.
+- **Helpers alone do not carry ARC.** Precedent programs do. In an earlier pilot on 80 training
+  tasks, with an image grown by the same model with extended thinking on, helpers alone gave 22
+  against 23 for the empty image; adding the closest earlier programs gave 28.
+- **The kernel's A/B gate is noisy.** Two runs of the same image differ by about 3 points on 100
+  tasks, so a 30-task window accepts a change with no effect about one time in ten at the default
+  margin of 3.
+
+## Quickstart
 
 ```bash
 pip install git+https://github.com/Meirtz/Limen
+aosr fetch                                   # ARC-AGI-1 at a pinned commit, into ~/.cache/aosr
+aosr boot                                    # head_0: the empty image
+export AOSR_ALLOW_LIVE=1                     # model calls go through the `claude` CLI
+aosr grow --run demo --n 50 --checkpoints 25,50 --out runs/demo --epoch-every 25
+aosr eval --image demo/n50 --arm grown --split dev --out runs/demo/grown.jsonl
+aosr eval --image head_0 --arm empty --split dev --out runs/demo/empty.jsonl
+aosr report --budget 2 runs/demo/empty.jsonl runs/demo/grown.jsonl \
+    --compare runs/demo/empty.jsonl@2,runs/demo/grown.jsonl@2
+aosr show demo/n50                            # what it grew
+aosr demo --run demo --grow-log runs/demo/grow.jsonl --out demo.html runs/demo/*.jsonl
 ```
 
-Python 3.10 or newer. No dependencies (on 3.10, `tomli` to read the config file).
+Live calls need the [`claude` CLI](https://docs.anthropic.com/en/docs/claude-code) on the path.
+Without `AOSR_ALLOW_LIVE=1`, every model call is refused, and runs can only replay from the cache.
+The AppWorld world needs Python 3.11 and `pip install appworld`
+(`aosr grow --world appworld ...`).
 
-## Use
+Two pages written by `aosr demo` show what a grown image looks like (download them and open them
+in a browser):
+- [docs/demo/arc-grown.html](docs/demo/arc-grown.html), the image behind the evaluation-split
+  result;
+- [docs/demo/arc-grown-and-evolved.html](docs/demo/arc-grown-and-evolved.html), a run that also
+  rewrote its kernel.
 
-Run each arm under `limen run`, declaring what the arm changes:
+## How it works
 
-```bash
-limen run --name wiki --arm base --treatment env:WIKI_ROOT eval.py
-WIKI_ROOT=kb/rich limen run --name wiki --arm rich --treatment env:WIKI_ROOT eval.py
-limen compare wiki:base wiki:rich
+**Images.** The store holds immutable objects addressed by the SHA-256 of their content:
+capabilities, programs, and kernel slots (`notes`, `policy`). An image names one version of each,
+plus use counts, and points at its parent. `aosr lineage`, `aosr show`, `aosr knockout` and
+`aosr slot` work on images.
+
+**Solving a task.**
+- The kernel loads the image's capabilities into a sandboxed child process, one capability at a
+  time, so a broken one cannot take the rest down.
+- It runs every one-argument capability and every stored program on the task's example inputs,
+  and ranks them by how close they come to the example outputs.
+- An exact match is verified and submitted with no model call.
+- Otherwise the worker sees the closest capabilities and programs, and alternates fresh attempts
+  with repairs that show it where its output was wrong.
+
+**Growing.**
+- A solution that is correct on its task's held-back test contributes its program as a precedent.
+- It also contributes each helper the program cannot do without: one that, replaced by an identity
+  stub, breaks the solution. Such helpers are admitted together with what they call.
+- A helper is not admitted if it reads module state, or if it behaves exactly like an existing
+  capability (its callers are pointed at that capability instead).
+- The task's `solve`, stripped of its helpers, must still verify on top of the extended library.
+- In AppWorld, a consolidation call first rewrites the solved episode as helpers plus
+  `solve(apis)`. This is replayed in a fresh copy of the task's world before anything is kept.
+
+**Evolving the kernel.**
+- Every N tasks, an engineer model reads digests of recent failures and successes. It proposes new
+  operating notes and, optionally, a new policy: how much of the library and of earlier programs
+  the worker is shown.
+- The proposal runs against the current kernel on the most recent stream tasks. It uses fresh
+  samples, and an image without what those tasks themselves contributed.
+- It is kept only if it solves at least `margin` more of them.
+
+**Measuring.** Attempts follow a fixed schedule, so one run at budget B also scores every budget
+b ≤ B. Arms are compared at matched calls with a paired bootstrap. The ARC evaluation split cannot
+be loaded without `AOSR_UNLOCK_EVAL=1`. On macOS the sandbox cannot read task data or reach the
+network. CI runs offline: a test fails if anything tries to start the `claude` CLI.
+
+## Layout
+
+```
+src/aosr/   the operating system: store, kernel, sandbox, admission, growth, evolution,
+            evaluation, statistics, worlds (ARC-AGI-1, AppWorld), CLI, demo page
+src/limen/  Limen, the experiment checker this project grew out of
 ```
 
-If `eval.py` picked up a stale copy of your package that never reads `WIKI_ROOT` (here, a
-leftover `sys.path.insert(0, "deploy")`), the comparison is refused:
+Limen checks that an experiment ran the way it claims: the treatment executed, nothing else
+changed between arms, gates could fail, held-out data stayed out. See
+[docs/limen-checker.md](docs/limen-checker.md).
 
-```
-$ limen compare wiki:base wiki:rich
-A: 1 run(s) ['wiki:base']
-B: 1 run(s) ['wiki:rich']
-treatment: env:WIKI_ROOT
-effect item_pass_rate: A=0.6 B=0.6 delta=+0  95% CI [+0, +0]
-BLOCK PLACEBO [env:WIKI_ROOT]: WIKI_ROOT was set differently in the arms but no run ever read it
-BLOCK SHADOWED [kb]: package 'kb' was imported from /repo/deploy/kb, not from its source /repo/src/kb (2 runs: ...)
-BLOCK TREATMENT_NOT_READ [env:WIKI_ROOT]: the declared treatment variable was never read by the process, so this arm cannot differ from its control (2 runs: ...)
-WARN  EFFECT_WITHIN_NOISE [item_pass_rate]: pass-rate delta +0.000, 95% CI [+0.000, +0.000] over 40 items includes 0
-3 blocking, 1 warnings
-```
+## License
 
-With the stray line removed, the same commands give:
-
-```
-treatment: env:WIKI_ROOT
-  env:WIKI_ROOT: A=<unset> | B=kb/rich
-effect item_pass_rate: A=0.6 B=1 delta=+0.4  95% CI [+0.25, +0.55]
-INFO  EXPLAINED_BY_TREATMENT: 2 input(s) read by one arm only lie under a treatment path
-0 blocking, 0 warnings
-```
-
-`compare` exits 1 on any blocking finding. Report per-item results and metrics from the experiment so the arms can be checked item by item:
-
-```python
-import limen
-
-for item in items:
-    limen.outcome(item.id, "pass" if ok else "fail")   # or "error", "timeout", "infra", "skip"
-limen.metric("accuracy", acc)
-lr = limen.param("lr", cfg.lr)
-```
-
-Gates can be given known-good and known-bad controls, so a gate that cannot fail is caught before
-it judges anything:
-
-```python
-@limen.gate("correct", positives=[reference_solution], negatives=[null_solution])
-def correct(candidate): ...
-```
-
-Other commands: `limen check RUN` (one run), `limen trace FILE` (which run produced a file, from
-what), `limen leak --holdout test.jsonl --key id train.jsonl` (held-out ids inside data files),
-`limen ls`, `limen show`. Declaring `holdout = ["data/test.jsonl"]` in `limen.toml` makes any run
-that is not an evaluation and reads it, directly or through derived files, a blocking finding.
-
-Every check and field is described in [docs/reference.md](docs/reference.md).
-
-## What it catches, measured
-
-`bench/` runs two small experiment loops (a trainer and a code judge) through fault scenarios,
-and compares Limen with what MLflow-style tracking (git commit, command-line and logged parameters,
-package versions, run status) and Sacred-style tracking (plus source hashes and host) would let
-you catch with the same comparison rule.
-
-| scenarios | detector | invalid comparisons caught | valid comparisons flagged |
-|---|---|---|---|
-| development (in-sample) | MLflow-style | 2 / 12 | 0 / 7 |
-| development (in-sample) | Sacred-style | 4 / 12 | 1 / 7 |
-| development (in-sample) | Limen | 11 / 12 | 0 / 7 |
-| **held-out** | MLflow-style | 7 / 18 | 2 / 9 |
-| **held-out** | Sacred-style | 8 / 18 | 3 / 9 |
-| **held-out** | **Limen** | **14 / 18** | **2 / 9** |
-
-The development scenarios were written together with Limen's checks, so only the held-out row
-says anything about generalization. The held-out scenarios were written after the checks were
-frozen (tag `bench-freeze`), by three independent authors who never saw Limen's source or output,
-and labeled by a separate blind adjudicator (27 of 27 labels agreed). They are small, synthetic and
-all Python, so they measure whether known kinds of fault are caught, not how common they are.
-
-On the held-out set:
-
-- Seven invalid comparisons were caught only by Limen: arms scored on different items or with
-  different rates of unparseable items (three times, once because of stray `._*.py` files in one
-  arm's candidates), a stale verdict cache (twice), a variable left exported in one arm's shell,
-  and a data snapshot re-pointed between arms.
-- Three catches came from a side effect rather than the fault itself: two "best of N seeds"
-  comparisons were flagged because the compared runs used different seeds, and a threshold tuned
-  on the validation split was flagged because the tuned arm read a different config file. The
-  tracking baselines catch these too.
-- Four were missed: a feature computed from the evaluation split's own labels, a noise-level
-  effect (warned as `EFFECT_WITHIN_NOISE`, not blocked), a treatment value misspelled so the code
-  silently fell back to its default, and candidate code importing the judge's test cases.
-- Two valid comparisons were flagged: a config file that was only reformatted between arms, and a
-  content-addressed verdict cache that skipped the declared gate on cache hits.
-
-Per-scenario results: [bench/results/results.md](bench/results/results.md); protocol:
-[bench/README.md](bench/README.md).
-
-## What it cannot see
-
-- Reads made by child processes, workers, other processes, or native code that opens files itself
-  (Arrow datasets, safetensors, HDF5). Limen lists the children and native readers it saw.
-- Whether a check is *meaningful*: a gate that tests the wrong thing but can pass and fail looks
-  healthy. Limen catches gates that did not run or cannot fail, not weak tests.
-- Anything a determined adversary does: records are not tamper-evident.
-
-## Status
-
-Alpha. The record format (`limen.run/1`) and the CLI may still change. The previous design of
-this repository (advisory write leases for concurrent agents) is kept at the tag `leases-final`.
-
-Licensed under MIT or Apache-2.0, at your option.
+MIT or Apache-2.0, at your option.
