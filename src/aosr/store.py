@@ -186,6 +186,13 @@ class Image:
         imports = sorted({i for c in caps for i in c["imports"]})
         return "\n".join(imports) + ("\n\n" if imports else "") + "\n\n\n".join(c["src"] for c in caps) + "\n"
 
+    def library_chunks(self, exclude: set[str] | None = None) -> list[str]:
+        """The library as loadable pieces: the imports, then one source per capability in admission order."""
+        names = [n for n in self.head.caps if not exclude or n not in exclude]
+        caps = [self.cap(n) for n in names]
+        imports = "\n".join(sorted({i for c in caps for i in c["imports"]}))
+        return [imports, *(str(c["src"]) for c in caps)]
+
     def programs(self) -> list[tuple[str, str]]:
         return [(t, self.store.get(d)["src"]) for t, d in sorted(self.head.programs.items())]
 
