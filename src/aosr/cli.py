@@ -111,7 +111,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     from aosr.evaluate import compare, load_arm, summarize
 
-    arms = {p: load_arm(Path(p)) for p in args.files}
+    def key(p: str) -> str:
+        return str(Path(p).expanduser().resolve())
+
+    arms = {key(p): load_arm(Path(p).expanduser()) for p in args.files}
     print("| arm | n | budget | solved | rate | by budget | calls | USD | USD/solve | with library | presolved |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for h, rows in arms.values():
@@ -123,7 +126,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     for spec in args.compare or []:
         a, b = spec.split(",")
         (pa, ba), (pb, bb) = (x.rsplit("@", 1) for x in (a, b))
-        print(f"{Path(pb).stem}@{bb} minus {Path(pa).stem}@{ba}: {compare(arms[pa], arms[pb], int(ba), int(bb))}")
+        iv = compare(arms[key(pa)], arms[key(pb)], int(ba), int(bb))
+        print(f"{Path(pb).stem}@{bb} minus {Path(pa).stem}@{ba}: {iv}")
     return 0
 
 
