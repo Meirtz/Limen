@@ -77,8 +77,18 @@ def cmd_grow(args: argparse.Namespace) -> int:
     out = Path(args.out).expanduser()
     stream = engine.load("stream", args.n)
     cps = tuple(int(x) for x in args.checkpoints.split(",") if x) if args.checkpoints else ()
-    cfg = GrowConfig(batch=args.batch, settings=Settings(budget=args.budget), checkpoints=cps, run=args.run)
     model = _model(args.model, out / "ledger.jsonl")
+    engineer = _model(args.engineer, out / "ledger.jsonl") if args.epoch_every else None
+    cfg = GrowConfig(
+        batch=args.batch,
+        settings=Settings(budget=args.budget),
+        checkpoints=cps,
+        run=args.run,
+        epoch_every=args.epoch_every,
+        engineer=engineer,
+        window=args.window,
+        margin=args.margin,
+    )
     print(grow(store, store.resolve(args.start), stream, engine, model, out, cfg))
     return 0
 
@@ -183,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--budget", type=int, default=2)
     g.add_argument("--batch", type=int, default=10)
     g.add_argument("--checkpoints", default="")
+    g.add_argument("--epoch-every", type=int, default=0, help="kernel evolution every N stream tasks")
+    g.add_argument("--engineer", default="haiku-think")
+    g.add_argument("--window", type=int, default=20)
+    g.add_argument("--margin", type=int, default=2)
     g.add_argument("--out", required=True)
     e = add("eval", cmd_eval, "evaluate a frozen image on held-out tasks")
     e.add_argument("--world", default="arc", choices=["arc", "appworld"])

@@ -195,3 +195,28 @@ def test_appworld_context_and_parsing() -> None:
     assert text.index("list_songs(apis)") < text.index("login_app(apis, app)"), "ranked by overlap with the task"
     assert "A similar task solved earlier" in text
     assert context_text([], [], "anything") == ""
+
+
+@pytest.mark.parametrize("helps", [True, False])
+def test_kernel_evolution_gates_notes_on_an_ab_window(world: Arc, tmp_path: Path, helps: bool) -> None:
+    store = Store(tmp_path / "store")
+    h0 = boot(store)
+
+    def worker(system: str, user: str, sample: int, role: str) -> str:
+        if helps and "Operating notes" in system:
+            return oracle()(system, user, sample, role)
+        return "```python\ndef solve(grid):\n    return grid\n```"
+
+    engineer = FakeModel(lambda s, u, k, r: "<notes>1. Check every example before answering.</notes>")
+    cfg = GrowConfig(batch=2, epoch_every=2, engineer=engineer, window=2, margin=1)
+    final = grow(store, h0, tasks(world, STREAM)[:2], ArcEngine(store, Sandbox(None), world), FakeModel(worker),
+                 tmp_path / "g", cfg, progress=lambda s: None)  # fmt: skip
+    image = Image(store, store.head(final))
+    epochs = [json.loads(x) for x in (tmp_path / "g" / "grow.jsonl").read_text().splitlines() if '"epoch"' in x]
+    assert len(epochs) == 1 and epochs[0]["accepted"] is helps
+    if helps:
+        assert image.slot_source("notes") == "1. Check every example before answering."
+        assert (epochs[0]["old"], epochs[0]["new"]) == (0, 2)
+    else:
+        assert image.slot_source("notes") is None
+    assert any(e["kind"] == "epoch" for e in store.events())

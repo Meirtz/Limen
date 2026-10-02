@@ -47,6 +47,10 @@ class Engine(Protocol):
         """Apply one contribution to ``head`` in stream order; return a JSON-able record of what changed."""
         ...
 
+    def digest(self, task: Task, episode: Episode) -> str:
+        """A short account of an episode for the kernel engineer."""
+        ...
+
 
 class ArcEngine:
     """ARC-AGI-1: write ``solve(grid)``; verify on the example pairs; judge on the held-back test pairs."""
@@ -102,3 +106,17 @@ class ArcEngine:
         assert attempt is not None
         adm = self.admitter.admit(head, task, attempt, position, {**origin, "call": attempt.call_key or "presolve"})
         return asdict(adm)
+
+    def digest(self, task: Task, episode: Episode) -> str:
+        r = self.world.render
+        ex = task.train[0]
+        lines = [
+            f"Task {task.id}: {'SOLVED' if self.judge(task, episode) else 'FAILED'} after {episode.calls} model calls.",
+            f"First example ({len(task.train)} in total):\n{r(ex[0])}\n->\n{r(ex[1])}",
+        ]
+        last = next((a for a in reversed(episode.attempts) if a.source), None)
+        if last is not None:
+            code = "\n".join(last.source.splitlines()[:40])
+            ok = sum(last.train_ok)
+            lines.append(f"Last program ({last.status}; {ok}/{len(task.train)} examples right):\n{code}")
+        return "\n".join(lines)
