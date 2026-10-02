@@ -43,6 +43,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e . pytest
       - run: python -m pytest
+        env:
+          AOSR_OFFLINE: "1"
 
   bench:
     runs-on: ubuntu-latest

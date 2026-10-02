@@ -106,3 +106,22 @@ def record(**overrides: Any) -> dict[str, Any]:
     base["declared"].update(declared)
     base.update(overrides)
     return base
+
+
+@pytest.fixture(autouse=True)
+def _aosr_offline(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AOSR tests never call a live model and never touch the user's caches."""
+    home = tmp_path_factory.mktemp("aosr_home")
+    monkeypatch.setenv("AOSR_HOME", str(home))
+    monkeypatch.setenv("AOSR_OFFLINE", "1")
+    for var in ("AOSR_ALLOW_LIVE", "AOSR_UNLOCK_EVAL", "AOSR_DATA", "AOSR_CACHE", "AOSR_SANDBOX_CACHE"):
+        monkeypatch.delenv(var, raising=False)
+    real_popen = subprocess.Popen
+
+    def guarded(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        first = argv[0] if isinstance(argv, list | tuple) and argv else str(argv).split(" ")[0]
+        if Path(str(first)).name == "claude" and not str(first).startswith(str(home.parent)):
+            raise RuntimeError("live claude call in tests")
+        return real_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", guarded)

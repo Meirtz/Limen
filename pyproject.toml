@@ -29,15 +29,16 @@ Issues = "https://github.com/Meirtz/Limen/issues"
 
 [project.scripts]
 limen = "limen.cli:main"
+aosr = "aosr.cli:main"
 
 [tool.hatch.version]
 path = "src/limen/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/limen"]
+packages = ["src/limen", "src/aosr"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/limen", "tests", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "CHANGELOG.md"]
+include = ["src/limen", "src/aosr", "tests", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "CHANGELOG.md"]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
@@ -58,7 +59,7 @@ ignore = ["SIM105", "RUF012", "SIM905"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["src/limen"]
+files = ["src/limen", "src/aosr"]
 strict = true
 warn_unused_ignores = false
 
