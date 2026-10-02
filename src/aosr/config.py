@@ -16,7 +16,7 @@ PRICES = {
 
 TIMEOUT_NOTHINK_S = 120.0
 TIMEOUT_THINK_S = 600.0
-PARALLEL = 10
+PARALLEL = int(os.environ.get("AOSR_PARALLEL", "10"))  # concurrent live model calls
 
 ALLOWED_IMPORTS = (
     "bisect",
