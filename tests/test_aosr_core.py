@@ -339,3 +339,17 @@ def test_sandboxed_code_cannot_read_task_data() -> None:
     )
     r = Sandbox(None).run("", prog, [0])
     assert r.outputs == [None] and r.errors[0] and "42" not in str(r.outputs)
+
+
+def test_an_expired_login_stops_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\nimport json, sys\nsys.stdin.read()\n"
+        "print(json.dumps({'is_error': True, 'result': 'Failed to authenticate: OAuth session expired'}))\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("AOSR_ALLOW_LIVE", "1")
+    monkeypatch.delenv("AOSR_OFFLINE")
+    cli = ClaudeCLI("claude-haiku-4-5", False, bin_path=str(script), cwd=tmp_path / "empty")
+    with pytest.raises(LiveCallsDisabled, match="authenticate"):
+        cli.complete("sys", "user")

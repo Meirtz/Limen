@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0-alpha.1 — 2026-10-03
+
+The repository now centres on AOSR, an agent operating system that grows itself from an empty
+image. Limen, the experiment checker, ships alongside it unchanged.
+
+- `aosr boot` creates the empty image. `aosr grow` runs a task stream through the kernel, and
+  every verified solution extends the image with:
+  - the helpers it could not do without, each confirmed by a knockout check and admitted together
+    with what it calls;
+  - the whole program, which later tasks are probed against.
+  The image is committed after every batch.
+- Kernel evolution (`--epoch-every`): an engineer model rewrites the worker's operating notes and
+  retrieval policy from recent failures. A rewrite is kept only if it solves more of the same
+  recent tasks on an A/B with fresh samples.
+- Two worlds:
+  - ARC-AGI-1: programs are verified in a sandboxed child process, and on macOS the child cannot
+    read task data;
+  - AppWorld: interactive episodes run in worker processes, and a solution is consolidated into
+    helpers plus `solve(apis)` and replayed in a fresh world.
+- `aosr eval` scores frozen images on held-out tasks at every budget prefix. `aosr report` compares
+  arms at a common budget with paired bootstrap intervals.
+- Images are content-addressed and keep their lineage:
+  - `aosr show`, `aosr lineage`, `aosr knockout` and `aosr slot` inspect and derive images;
+  - `aosr demo` writes an HTML page of how an image grew.
+- Model calls go through the `claude` CLI, and are cached and replayable. CI never makes a live
+  call.
+- Measured: see the README. On 400 held-out ARC-AGI-1 evaluation tasks, an image grown by the same
+  small model solved 45 against 35 for the empty image at the same number of calls. In AppWorld a
+  grown image solved more tasks within 8 and within 12 turns. Kernel rewrites passed their gate
+  but did not measurably help on held-out tasks.
+
 ## 0.3.0-alpha.1 — 2026-10-01
 
 Limen is rebuilt from scratch as a small, dependency-free Python tool that checks whether an

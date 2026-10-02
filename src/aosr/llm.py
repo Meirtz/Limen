@@ -227,6 +227,9 @@ class ClaudeCLI:
             except json.JSONDecodeError:
                 status = "infra_error"
                 continue
+            if d.get("is_error") and "authenticate" in str(d.get("result", "")).lower():
+                # an expired login fails every later call too; stop instead of recording failures as results
+                raise LiveCallsDisabled(f"the claude CLI cannot authenticate: {d.get('result')}")
             if d.get("is_error") or not isinstance(d.get("result"), str):
                 status = "infra_error"
                 continue
