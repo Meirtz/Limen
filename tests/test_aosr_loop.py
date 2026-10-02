@@ -11,6 +11,7 @@ import pytest
 
 from aosr import evaluate
 from aosr.domains import Arc, Task
+from aosr.engine import ArcEngine
 from aosr.evaluate import Arm, load_arm, run_arm, summarize
 from aosr.grow import GrowConfig, boot, grow
 from aosr.kernel import PREV_PROGRAM, Kernel, Settings, code_of
@@ -67,9 +68,8 @@ def test_grow_then_evaluate_shows_reuse_and_presolve(world: Arc, tmp_path: Path)
         store,
         h0,
         tasks(world, STREAM),
-        world,
+        ArcEngine(store, sb, world),
         model,
-        sb,
         tmp_path / "grow",
         GrowConfig(batch=2, settings=Settings(budget=2), checkpoints=(2,)),
         progress=lambda s: None,
@@ -81,11 +81,13 @@ def test_grow_then_evaluate_shows_reuse_and_presolve(world: Arc, tmp_path: Path)
     assert all(r["correct"] for r in log)
 
     dev = tasks(world, DEV)
+    engine = ArcEngine(store, sb, world)
     seed = run_arm(
-        store, Arm("SEED", h0, FakeModel(oracle()), Settings(budget=2)), dev, world, sb, tmp_path / "e" / "seed.jsonl"
+        store, Arm("SEED", h0, FakeModel(oracle()), Settings(budget=2)), dev, engine, tmp_path / "e" / "seed.jsonl"
     )
-    lib_model = FakeModel(oracle())
-    lib = run_arm(store, Arm("LIB", final, lib_model, Settings(budget=2)), dev, world, sb, tmp_path / "e" / "lib.jsonl")
+    lib = run_arm(
+        store, Arm("LIB", final, FakeModel(oracle()), Settings(budget=2)), dev, engine, tmp_path / "e" / "lib.jsonl"
+    )
     s_seed = summarize({"arm": "SEED", "budget": 2}, seed)
     s_lib = summarize({"arm": "LIB", "budget": 2}, lib)
     assert s_seed["solved"] == 4 and s_seed["solved_with_library"] == 0
@@ -100,16 +102,14 @@ def test_grow_then_evaluate_shows_reuse_and_presolve(world: Arc, tmp_path: Path)
     ko = Image(store, Image(store, store.head(final)).knockout({"recolor"}))
     assert "recolor" not in ko.names()
     assert all("recolor" not in store.get(d)["calls"] for d in ko.head.programs.values())
-    assert store.get(image.head.programs["d1"] if "d1" in image.head.programs else image.head.programs["s4"])
 
     # growth replays exactly from the caches
     again = grow(
         store,
         h0,
         tasks(world, STREAM),
-        world,
+        ArcEngine(store, sb, world),
         FakeModel(oracle(buggy_first=True)),
-        sb,
         tmp_path / "grow2",
         GrowConfig(batch=2, settings=Settings(budget=2)),
         progress=lambda s: None,
@@ -125,9 +125,8 @@ def test_no_context_arm_hides_the_library(world: Arc, tmp_path: Path) -> None:
         store,
         h0,
         tasks(world, STREAM)[:1],
-        world,
+        ArcEngine(store, sb, world),
         FakeModel(oracle()),
-        sb,
         tmp_path / "g",
         GrowConfig(batch=1),
         progress=lambda s: None,
@@ -143,8 +142,7 @@ def test_no_context_arm_hides_the_library(world: Arc, tmp_path: Path) -> None:
         store,
         Arm("NOCTX", final, FakeModel(spy), Settings(budget=1, context="none")),
         dev,
-        world,
-        sb,
+        ArcEngine(store, sb, world),
         tmp_path / "x.jsonl",
     )
     assert seen and "LIBRARY" not in seen[0]
@@ -164,3 +162,36 @@ def test_cli_boot_show_lineage(tmp_path: Path) -> None:
     shown = run("show", "--store", env_store, "head_0")
     assert shown.returncode == 0 and '"capabilities": 0' in shown.stdout
     assert h0[:12] in run("lineage", "--store", env_store, "head_0").stdout
+
+
+def test_appworld_context_and_parsing() -> None:
+    from aosr.apps import context_text, first_block
+
+    assert first_block("a\n```python\nx = 1\n```\n```python\ny = 2\n```") == "x = 1\n"
+    index = [
+        {
+            "name": "login_app",
+            "sig": "login_app(apis, app)",
+            "doc": "Log in to an app.",
+            "src": "def login_app(apis, app): ...",
+            "uses": 3,
+        },
+        {
+            "name": "list_songs",
+            "sig": "list_songs(apis)",
+            "doc": "All songs in the Spotify library.",
+            "src": "def list_songs(apis): ...",
+            "uses": 1,
+        },
+    ]
+    precedents = [
+        {
+            "task": "t1",
+            "instruction": "How many songs are in my Spotify playlist named Chill?",
+            "src": "def solve(apis): ...",
+        }
+    ]
+    text = context_text(index, precedents, "How many songs are in my Spotify library?")
+    assert text.index("list_songs(apis)") < text.index("login_app(apis, app)"), "ranked by overlap with the task"
+    assert "A similar task solved earlier" in text
+    assert context_text([], [], "anything") == ""

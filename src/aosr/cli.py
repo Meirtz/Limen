@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from aosr import config
 
 if TYPE_CHECKING:
-    from aosr.domains import Arc, Task
+    from aosr.engine import Engine
     from aosr.llm import Model
     from aosr.sandbox import Sandbox
     from aosr.store import Store
@@ -28,12 +28,6 @@ def _store(args: argparse.Namespace) -> Store:
     return Store(Path(args.store).expanduser())
 
 
-def _world() -> Arc:
-    from aosr.domains import Arc
-
-    return Arc()
-
-
 def _sandbox() -> Sandbox:
     from aosr.sandbox import Sandbox
 
@@ -44,6 +38,16 @@ def _model(spec: str, ledger_path: Path) -> Model:
     from aosr.llm import CallCache, Ledger, make_model
 
     return make_model(spec, cache=CallCache(config.llm_cache_path()), ledger=Ledger(ledger_path))
+
+
+def _engine(args: argparse.Namespace, store: Store) -> Engine:
+    if args.world == "arc":
+        from aosr.engine import ArcEngine
+
+        return ArcEngine(store, _sandbox())
+    from aosr.apps import AppEngine
+
+    return AppEngine(store, data_root=config.appworld_root())
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
@@ -64,33 +68,18 @@ def cmd_boot(args: argparse.Namespace) -> int:
     return 0
 
 
-def _tasks(world: Arc, split: str, n: int | None, offset: int = 0) -> list[Task]:
-    from aosr.domains import splits
-
-    if split in ("stream", "dev"):
-        ids = splits(world)[split]
-        source = "training"
-    elif split == "evaluation":
-        ids = world.ids("evaluation")
-        source = "evaluation"
-    else:
-        raise SystemExit(f"unknown split {split}")
-    ids = ids[offset:]
-    return world.load(ids[:n] if n else ids, source)
-
-
 def cmd_grow(args: argparse.Namespace) -> int:
     from aosr.grow import GrowConfig, grow
     from aosr.kernel import Settings
 
-    store, world = _store(args), _world()
+    store = _store(args)
+    engine = _engine(args, store)
     out = Path(args.out).expanduser()
-    stream = _tasks(world, "stream", args.n)
+    stream = engine.load("stream", args.n)
     cps = tuple(int(x) for x in args.checkpoints.split(",") if x) if args.checkpoints else ()
     cfg = GrowConfig(batch=args.batch, settings=Settings(budget=args.budget), checkpoints=cps, run=args.run)
     model = _model(args.model, out / "ledger.jsonl")
-    digest = grow(store, store.resolve(args.start), stream, world, model, _sandbox(), out, cfg)
-    print(digest)
+    print(grow(store, store.resolve(args.start), stream, engine, model, out, cfg))
     return 0
 
 
@@ -98,14 +87,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
     from aosr.evaluate import Arm, run_arm, summarize
     from aosr.kernel import Settings
 
-    store, world = _store(args), _world()
+    store = _store(args)
+    engine = _engine(args, store)
     out = Path(args.out).expanduser()
-    tasks = _tasks(world, args.split, args.n, args.offset)
+    tasks = engine.load(args.split, args.n, args.offset)
     settings = Settings(budget=args.budget, context=args.context, sample_offset=args.sample_offset)
     arm = Arm(args.arm, store.resolve(args.image), _model(args.model, out.with_suffix(".ledger.jsonl")), settings)
-    rows = run_arm(store, arm, tasks, world, _sandbox(), out)
-    header = {"arm": args.arm, "budget": args.budget}
-    print(json.dumps(summarize(header, rows)))
+    rows = run_arm(store, arm, tasks, engine, out)
+    print(json.dumps(summarize({"arm": args.arm, "budget": args.budget}, rows)))
     return 0
 
 
@@ -186,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     add("fetch", cmd_fetch, "fetch ARC-AGI-1 at the pinned commit")
     add("boot", cmd_boot, "create head_0, the empty image")
     g = add("grow", cmd_grow, "grow an image over the stream split")
+    g.add_argument("--world", default="arc", choices=["arc", "appworld"])
     g.add_argument("--from", dest="start", default="head_0")
     g.add_argument("--run", required=True)
     g.add_argument("--n", type=int, default=300)
@@ -195,9 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--checkpoints", default="")
     g.add_argument("--out", required=True)
     e = add("eval", cmd_eval, "evaluate a frozen image on held-out tasks")
+    e.add_argument("--world", default="arc", choices=["arc", "appworld"])
     e.add_argument("--image", required=True)
     e.add_argument("--arm", required=True)
-    e.add_argument("--split", default="dev", choices=["dev", "evaluation", "stream"])
+    e.add_argument("--split", default="dev")
     e.add_argument("--n", type=int, default=None)
     e.add_argument("--offset", type=int, default=0)
     e.add_argument("--model", default="haiku-nothink")

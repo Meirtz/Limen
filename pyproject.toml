@@ -67,3 +67,5 @@ warn_unused_ignores = false
 # the bench's experiment loops and scenarios are deliberately written like ordinary user code
 "bench/loops/**" = ["B905", "I001"]
 "bench/scenarios/**" = ["E501", "E401", "I001", "B905"]
+# prompt text is kept as the model reads it
+"src/aosr/apps.py" = ["E501"]
