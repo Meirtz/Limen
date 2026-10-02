@@ -48,7 +48,7 @@ def system_prompt(world: World) -> str:
 @dataclass
 class Settings:
     budget: int = 2  # model calls per task
-    context: str = "full"  # full | none
+    context: str = "full"  # full | helpers | precedents | none (which parts of the image the worker may use)
     probe_cap: int = 300  # most-used capabilities probed per task
     retrieve_k: int = 3
     retrieve_min: float = 0.3
@@ -152,9 +152,11 @@ class Kernel:
         if settings.context == "none" or not (image.names() or image.head.programs):
             return "", [], []
         parts: list[str] = []
+        if settings.context == "precedents":
+            probes = []
         rank = {n: i for i, (n, _) in enumerate(probes)}
         listed = sorted(image.names(), key=lambda n: (rank.get(n, 10**6), -image.head.caps[n].uses))
-        listed = listed[: settings.index_lines]
+        listed = listed[: settings.index_lines] if settings.context in ("full", "helpers") else []
         if listed:
             lines = [f"- {image.cap(n)['sig']}: {image.cap(n)['doc']}" for n in listed]
             parts.append(LIBRARY_HEADER + "\n" + "\n".join(lines))
@@ -165,6 +167,8 @@ class Kernel:
             ]
             parts.append(RETRIEVED_HEADER + "\n\n" + "\n\n".join(blocks))
         close = [(t, s) for t, s in precs[: settings.precedent_k] if s >= settings.precedent_min]
+        if settings.context == "helpers":
+            close = []
         if close:
             src = dict(image.programs())
             blocks = [f"# program for task {t}: {s:.0%} of example cells right\n{src[t].strip()}" for t, s in close]
@@ -230,8 +234,10 @@ class Kernel:
         self, task: Task, image: Image, model: Model, settings: Settings, meta: dict[str, str] | None = None
     ) -> Episode:
         library = image.library_source()
-        probes = self.probe(image, task, library, settings) if image.names() else []
-        precs = self.precedents(image, task, library) if image.head.programs else []
+        use_helpers = settings.context in ("full", "helpers")
+        use_programs = settings.context in ("full", "precedents")
+        probes = self.probe(image, task, library, settings) if use_helpers and image.names() else []
+        precs = self.precedents(image, task, library) if use_programs and image.head.programs else []
         attempts: list[Attempt] = []
         candidates = [f"def solve(grid):\n    return {n}(grid)\n" for n, s in probes if s == 1.0][:20]
         prog_src = dict(image.programs())

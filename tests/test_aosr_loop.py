@@ -220,3 +220,23 @@ def test_kernel_evolution_gates_notes_on_an_ab_window(world: Arc, tmp_path: Path
     else:
         assert image.slot_source("notes") is None
     assert any(e["kind"] == "epoch" for e in store.events())
+
+
+def test_context_modes_select_parts_of_the_image(world: Arc, tmp_path: Path) -> None:
+    store = Store(tmp_path / "store")
+    sb = Sandbox(None)
+    final = grow(store, boot(store), tasks(world, STREAM)[:1], ArcEngine(store, sb, world), FakeModel(oracle()),
+                 tmp_path / "g", GrowConfig(batch=1), progress=lambda s: None)  # fmt: skip
+    image = Image(store, store.head(final))
+    kernel = Kernel(world, sb)
+    task = next(t for t in tasks(world, DEV) if t.id == "d1")
+    probes = [("flip_rows", 0.5)]
+    precs = [("s1", 0.9)]
+    full, _, shown = kernel.context(image, probes, precs, Settings(retrieve_min=0.0))
+    assert "LIBRARY" in full and "CLOSEST PROGRAMS" in full and shown == ["s1"]
+    helpers, _, shown = kernel.context(image, probes, precs, Settings(context="helpers", retrieve_min=0.0))
+    assert "LIBRARY" in helpers and "CLOSEST PROGRAMS" not in helpers and shown == []
+    progs, retrieved, _ = kernel.context(image, probes, precs, Settings(context="precedents"))
+    assert "LIBRARY" not in progs and "CLOSEST PROGRAMS" in progs and retrieved == []
+    ep = kernel.solve(task, image, FakeModel(oracle()), Settings(context="none", budget=1))
+    assert all(a.kind != "presolve" for a in ep.attempts), "the none arm gets no presolve either"
