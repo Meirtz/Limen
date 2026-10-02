@@ -52,10 +52,12 @@ def grow(
     model: Model,
     out_dir: Path,
     cfg: GrowConfig,
-    progress: Callable[[str], None] = print,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     """Grow from image ``start`` over ``stream``; return the final image digest."""
     settings = cfg.settings or Settings()
+    if progress is None:
+        progress = _say
     head = store.head(start)
     head.parent, digest = start, start
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +132,10 @@ def grow(
         )
     store.set_ref(f"{cfg.run}/n{len(stream)}", digest)
     return digest
+
+
+def _say(line: str) -> None:
+    print(line, flush=True)
 
 
 def episodes_of(path: Path) -> list[Episode]:
