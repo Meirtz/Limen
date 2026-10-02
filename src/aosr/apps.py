@@ -143,6 +143,9 @@ def episode_job(job: dict[str, Any]) -> dict[str, Any]:
             f"\n{world.task.instruction}"
         )
         ctx = context_text(job["index"], job["precedents"], world.task.instruction) if job["show"] else ""
+        system = SYSTEM
+        if job["notes"]:
+            system += "\n\nOperating notes (written by this system from its own experience):\n" + job["notes"]
         history: list[tuple[str, str]] = []
         for turn in range(job["turns"]):
             past = [
@@ -151,7 +154,7 @@ def episode_job(job: dict[str, Any]) -> dict[str, Any]:
             ]
             user = "\n\n".join([head] + ([ctx] if ctx else []) + past + ["Write the next code cell."])
             c = model.complete(
-                SYSTEM,
+                system,
                 user,
                 sample=job["sample"] + turn,
                 role="worker",
@@ -190,6 +193,7 @@ def episode_job(job: dict[str, Any]) -> dict[str, Any]:
             "success": bool(result.success),
             "used": used,
             "instruction": world.task.instruction,
+            "outputs": [o[:400] for _, o in history],
             "passes": result.pass_count,
             "tests": result.num_tests,
         }
@@ -298,6 +302,7 @@ class AppEngine:
             "names": names,
             "index": index,
             "precedents": precedents,
+            "notes": image.slot_source("notes") or "",
             "meta": meta,
             "experiment": f"aosr-{tag}",
         }
@@ -329,8 +334,22 @@ class AppEngine:
             atts[-1].used = dict(r["used"])
         ep = Episode(r["task"], atts, retrieved=sorted(r["used"]))
         ep.success = r["success"]
-        ep.extra = {"instruction": r["instruction"], "passes": r["passes"], "tests": r["tests"]}
+        ep.extra = {
+            "instruction": r["instruction"],
+            "passes": r["passes"],
+            "tests": r["tests"],
+            "outputs": r["outputs"],
+        }
         return ep
+
+    def digest(self, task: Task, episode: Episode) -> str:
+        verdict = "SOLVED" if episode.success else "FAILED"
+        lines = [f'Task: "{episode.extra.get("instruction", "")}" -- {verdict} after {episode.calls} turns.']
+        outs = episode.extra.get("outputs", [])
+        for a, o in list(zip(episode.attempts, outs, strict=False))[-5:]:
+            code = "\n".join(a.source.splitlines()[:12])
+            lines.append(f"```python\n{code}\n```\nOutput: {o[:300]}")
+        return "\n".join(lines)
 
     def judge(self, task: Task, episode: Episode) -> bool:
         return bool(episode.success)

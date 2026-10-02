@@ -243,6 +243,9 @@ class Kernel:
                 return Episode(task.id, attempts)
         context, retrieved, used_precs = self.context(image, probes, precs, settings)
         system = system_prompt(self.world)
+        notes = image.slot_source("notes")
+        if notes:
+            system += "\n\nOperating notes (written by this system from its own experience):\n" + notes
         prev: Attempt | None = None
         feedback = ""
         for i in range(settings.budget):

@@ -16,6 +16,7 @@ from typing import Any
 
 from aosr.domains import Task
 from aosr.engine import Engine
+from aosr.evolve import epoch
 from aosr.kernel import Episode, Settings
 from aosr.llm import Model
 from aosr.store import Head, Image, Store
@@ -27,6 +28,10 @@ class GrowConfig:
     settings: Settings | None = None
     checkpoints: tuple[int, ...] = ()  # stream positions at which to name an image (refs <run>/n<pos>)
     run: str = "grow"
+    epoch_every: int = 0  # kernel evolution every N stream tasks (0 = never)
+    engineer: Model | None = None
+    window: int = 20
+    margin: int = 2
 
 
 def boot(store: Store, seed_slots: dict[str, str] | None = None) -> str:
@@ -58,6 +63,7 @@ def grow(
     log_path.write_text("")
     solved = 0
     meta = {"run": cfg.run, "phase": "grow"}
+    seen: list[tuple[Task, Episode]] = []
     for i in range(0, len(stream), cfg.batch):
         batch = stream[i : i + cfg.batch]
         image = Image(store, head.copy())
@@ -82,10 +88,34 @@ def grow(
                     {"kind": "admit", "run": cfg.run, "position": pos, "task": task.id, "admission": rec["admission"]}
                 )
             rec["episode"] = ep.to_json()
+            seen.append((task, ep))
             with log_path.open("a") as f:
                 f.write(json.dumps(rec, default=str) + "\n")
-        head.seq += 1
         end = i + len(batch)
+        if cfg.epoch_every and cfg.engineer is not None and end // cfg.epoch_every > i // cfg.epoch_every:
+            recent = seen[-cfg.epoch_every :]
+            failed = [(t, e) for t, e in recent if not engine.judge(t, e)]
+            passed = [(t, e) for t, e in recent if engine.judge(t, e)]
+            window = [t for t, _ in recent[-cfg.window :]]
+            result = epoch(
+                store,
+                head,
+                engine,
+                model,
+                cfg.engineer,
+                window,
+                failed[:6] + passed[:2],
+                settings,
+                {"run": cfg.run, "epoch": str(end)},
+            )
+            store.log({"kind": "epoch", "run": cfg.run, "position": end, **result.to_json()})
+            with log_path.open("a") as f:
+                f.write(json.dumps({"epoch": end, **result.to_json()}) + "\n")
+            progress(
+                f"epoch at {end}: notes {'ACCEPTED' if result.accepted else 'rejected'} "
+                f"({result.old} -> {result.new} of {len(window)} solved)"
+            )
+        head.seq += 1
         head.note = f"{cfg.run}: after {end} stream tasks"
         digest = store.commit(head)
         head.parent = digest
@@ -110,7 +140,10 @@ def episodes_of(path: Path) -> list[Episode]:
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
-        e = json.loads(line)["episode"]
+        rec = json.loads(line)
+        if "episode" not in rec:
+            continue
+        e = rec["episode"]
         atts = [Attempt(**{**a, "edges": [tuple(x) for x in a["edges"]]}) for a in e["attempts"]]
         out.append(Episode(e["task"], atts, e.get("retrieved", []), e.get("precedents", [])))
     return out
