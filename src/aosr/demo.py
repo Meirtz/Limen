@@ -11,7 +11,7 @@ from aosr.evaluate import load_arm, summarize
 from aosr.store import Image, Store
 
 CSS = """
-body{font:14px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;margin:32px auto;max-width:1080px;color:#1d1d1f;padding:0 16px}
+:root{color-scheme:light} html{background:#fff} body{font:14px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;margin:32px auto;max-width:1080px;color:#1d1d1f;background:#fff;padding:0 16px}
 h1{font-size:26px;margin:0 0 4px} h2{font-size:18px;margin:32px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}
 .sub{color:#666} .k{display:inline-block;margin:8px 24px 8px 0} .k b{font-size:22px;display:block}
 table{border-collapse:collapse;width:100%;font-size:13px} td,th{border-bottom:1px solid #eee;padding:4px 6px;text-align:left;vertical-align:top}
