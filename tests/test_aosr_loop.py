@@ -274,3 +274,57 @@ def test_demo_page_renders_growth(world: Arc, tmp_path: Path) -> None:
     page = render(store, "demo", tmp_path / "g" / "grow.jsonl", [], "test")
     assert page.startswith("<!doctype html>") and "flip_rows" in page and "<svg" in page
     assert "stream tasks solved" in page and "No kernel epochs" in page
+
+
+def test_appworld_context_modes_change_what_the_worker_sees(tmp_path: Path) -> None:
+    from aosr.apps import AppEngine
+    from aosr.llm import CallCache, make_model
+    from aosr.store import CapEntry
+
+    store = Store(tmp_path / "store")
+    head = store.head(boot(store))
+    cap = {"type": "cap", "name": "login", "src": "def login(apis):\n    return 1", "imports": [], "doc": "Log in.",
+           "sig": "login(apis)", "arity": 1, "deps": [], "origin": {}}  # fmt: skip
+    head.caps["login"] = CapEntry(store.put(cap))
+    head.programs["t0"] = store.put({"type": "program", "task": "t0", "src": "def solve(apis): ...", "calls": []})
+    image = Image(store, head)
+    model = make_model("replay:haiku-nothink", cache=CallCache(tmp_path / "c.sqlite"))
+    engine = AppEngine(store, tmp_path)
+    task = [Task("t1", "dev", (), ())]
+
+    def job(mode: str) -> dict[str, object]:
+        return engine.jobs(task, image, model, Settings(context=mode), {"arm": mode})[0]
+
+    full, helpers, precedents, none = job("full"), job("helpers"), job("precedents"), job("none")
+    assert full["index"] and full["precedents"] and full["library"]
+    assert helpers["index"] and not helpers["precedents"]
+    assert not precedents["index"] and precedents["precedents"] and precedents["library"]
+    assert not none["library"] and not none["index"] and not none["precedents"] and none["show"] is False
+
+
+def test_summaries_can_be_cut_at_a_common_budget() -> None:
+    header = {"arm": "A", "budget": 4}
+    rows = [
+        {"solved_at": [False, False, False, True, True], "calls": 3, "call_usd": [0.1, 0.1, 0.1], "usd": 0.3,
+         "errors": 0, "first_verified": {"used": [], "kind": "synth"}},
+        {"solved_at": [False, True, True, True, True], "calls": 1, "call_usd": [0.2], "usd": 0.2, "errors": 0,
+         "first_verified": {"used": ["f"], "kind": "synth"}},
+    ]  # fmt: skip
+    full, cut = summarize(header, rows), summarize(header, rows, 2)
+    assert (full["solved"], full["calls"], full["usd"]) == (2, 4, 0.5)
+    assert (cut["solved"], cut["calls"], cut["usd"]) == (1, 3, 0.4) and cut["solved_with_library"] == 1
+    with pytest.raises(ValueError):
+        summarize(header, rows, 5)
+
+
+def test_ab_window_cannot_see_its_own_tasks(world: Arc, tmp_path: Path) -> None:
+    from aosr.evolve import blind
+
+    store = Store(tmp_path / "store")
+    final = grow(store, boot(store), tasks(world, STREAM), ArcEngine(store, Sandbox(None), world), FakeModel(oracle()),
+                 tmp_path / "g", GrowConfig(batch=2), progress=lambda s: None)  # fmt: skip
+    head = store.head(final)
+    window = [t for t in tasks(world, STREAM) if t.id in ("s1", "s2")]
+    seen = blind(store, head, window)
+    assert "s1" not in seen.programs and "s2" not in seen.programs and "s3" in seen.programs
+    assert "flip_rows" not in seen.caps and "flip_cols" not in seen.caps and "transpose" in seen.caps

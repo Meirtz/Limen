@@ -80,6 +80,16 @@ def propose(
     return (notes.group(1).strip() if notes else current), (new_policy or policy), c.usd()
 
 
+def blind(store: Store, head: Head, window: list[Task]) -> Head:
+    """The head without what the window's own tasks contributed, so the A/B cannot replay their solutions."""
+    ids = {t.id for t in window}
+    born = {n for n, e in head.caps.items() if store.get(e.digest).get("origin", {}).get("task") in ids}
+    h = Image(store, head).knockout(born) if born else head.copy()
+    h.programs = {t: d for t, d in h.programs.items() if t not in ids}
+    h.slots = dict(head.slots)
+    return h
+
+
 def solved(engine: Engine, tasks: list[Task], eps: list[Episode]) -> int:
     return sum(engine.judge(t, e) for t, e in zip(tasks, eps, strict=True))
 
@@ -94,7 +104,7 @@ def epoch(
     recent: list[tuple[Task, Episode]],
     settings: Settings,
     meta: dict[str, str],
-    margin: int = 2,
+    margin: int = 3,
 ) -> EpochResult:
     """Propose new notes from ``recent`` and gate them on ``window``; mutate ``head`` if accepted."""
     image = Image(store, head)
@@ -108,8 +118,10 @@ def epoch(
     if new_policy:
         candidate.slots["policy"] = store.put({"type": "slot", "slot": "policy", "src": new_policy, "origin": meta})
     ab = replace(settings, sample_offset=settings.sample_offset + 7000 + head.seq * 100)
-    old_eps = engine.run(window, Image(store, head.copy()), worker, ab, {**meta, "phase": "evolve-old"})
-    new_eps = engine.run(window, Image(store, candidate), worker, ab, {**meta, "phase": "evolve-new"})
+    old_eps = engine.run(window, Image(store, blind(store, head, window)), worker, ab, {**meta, "phase": "evolve-old"})
+    new_eps = engine.run(
+        window, Image(store, blind(store, candidate, window)), worker, ab, {**meta, "phase": "evolve-new"}
+    )
     old, new = solved(engine, window, old_eps), solved(engine, window, new_eps)
     cost += sum(a.usd for e in old_eps + new_eps for a in e.attempts)
     accepted = new >= old + margin

@@ -95,10 +95,12 @@ class CallCache:
             row = self._db.execute("SELECT completion FROM calls WHERE key = ?", (key,)).fetchone()
         return Completion.from_json(json.loads(row[0])) if row else None
 
-    def put(self, completion: Completion) -> None:
+    def put(self, completion: Completion) -> Completion:
+        """Store a completion unless one is already stored for its key; return the stored one."""
         blob = json.dumps(completion.to_json(), ensure_ascii=False)
         with self._lock:
-            self._db.execute("INSERT OR REPLACE INTO calls VALUES (?, ?, ?)", (completion.key, blob, time.time()))
+            self._db.execute("INSERT OR IGNORE INTO calls VALUES (?, ?, ?)", (completion.key, blob, time.time()))
+        return self.get(completion.key) or completion
 
     def keys(self) -> list[str]:
         with self._lock:
@@ -273,8 +275,10 @@ class CachedModel:
                 c = Completion(**{**hit.__dict__, "cached": True})
             else:
                 c = self.inner.complete(system, user, sample=sample, role=role, meta=meta)
-                if c.ok:
-                    self.cache.put(c)
+                if c.ok:  # another process may have stored this call first; everyone uses the stored answer
+                    stored = self.cache.put(c)
+                    if stored.text != c.text:
+                        c = Completion(**{**stored.__dict__, "cached": True})
         if self.ledger:
             self.ledger.write(c, role, meta)
         return c

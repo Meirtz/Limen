@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from aosr import config
+from aosr.admit import free_loads, rename
 from aosr.domains import Task
 from aosr.kernel import Attempt, Episode, Settings, with_policy
 from aosr.llm import CallCache, Ledger, Model, make_model
@@ -215,15 +216,25 @@ def episode_job(job: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-def _replay(aw: Any, task: str, library: str, code: str, stub: str | None, experiment: str) -> bool:
+def _replay(
+    aw: Any, task: str, library: str, names: list[str], code: str, stub: str | None, experiment: str
+) -> tuple[bool, list[str]]:
+    """Run code + solve(apis) in a fresh world; return success and the library functions solve executed."""
     with aw.AppWorld(task_id=task, experiment_name=experiment) as world:
         if library:
             world.execute(library)
+            world.execute(TRACER % json.dumps(names))
         world.execute(code)
         if stub:
             world.execute(f"def {stub}(*args, **kwargs):\n    return None\n")
         world.execute("solve(apis)")
-        return bool(world.evaluate().success)
+        calls: list[str] = []
+        if library:
+            try:
+                calls = sorted(json.loads(world.execute("print(_aosr_json.dumps(_aosr_calls))").strip() or "{}"))
+            except (json.JSONDecodeError, ValueError):
+                calls = []
+        return bool(world.evaluate().success), calls
 
 
 def consolidate_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -233,12 +244,14 @@ def consolidate_job(job: dict[str, Any]) -> dict[str, Any]:
     model = _model_in_worker(job["model"], job["cache"], job["ledger"])
     out: dict[str, Any] = {
         "task": job["task"],
+        "position": job.get("position", 0),
         "ok": False,
         "caps": [],
         "program": None,
         "used": job["used"],
+        "calls_in_replay": [],
         "instruction": job["instruction"],
-        "calls": 1,
+        "renamed": {},
     }
     cells = "\n\n".join(f"# cell {k + 1}\n{c}" for k, c in enumerate(job["cells"]) if c)
     index = "\n".join(f"- {c['sig']}: {c['doc']}" for c in job["index"])
@@ -252,17 +265,40 @@ def consolidate_job(job: dict[str, Any]) -> dict[str, Any]:
         tree = ast.parse(code)
     except SyntaxError:
         return out
-    if not _replay(aw, job["task"], job["library"], code, None, job["experiment"]):
-        return out
-    out["ok"], out["program"] = True, code
-    defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name != "solve"]
     known = set(job["names"])
-    for fn in defs[:6]:
-        if fn.name in known or _replay(aw, job["task"], job["library"], code, fn.name, job["experiment"]):
-            continue  # already in the library, or not needed for this task
+    defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name != "solve"]
+    # a helper that reuses a library name with new code is renamed, in the helper and wherever the code calls it
+    library_src = {cap["name"]: cap["src"] for cap in job["index"]}
+    mapping = {d.name: f"{d.name}_{job['task'][:6]}" for d in defs if d.name in known
+               and ast.unparse(d) != library_src.get(d.name)}  # fmt: skip
+    if mapping:
+        code = rename(code, mapping)
+        tree = ast.parse(code)
+        defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name != "solve"]
+        out["renamed"] = mapping
+    ok, calls = _replay(aw, job["task"], job["library"], job["names"], code, None, job["experiment"])
+    if not ok:
+        return out
+    out["ok"], out["program"], out["calls_in_replay"] = True, code, calls
+    local = {d.name: d for d in defs if d.name not in known}
+    needed: list[str] = []
+    for name in list(local)[:6]:
+        stub_ok, _ = _replay(aw, job["task"], job["library"], job["names"], code, name, job["experiment"])
+        if not stub_ok:
+            needed.append(name)
+    closure: list[str] = []
+    todo = list(needed)
+    while todo:  # needed helpers plus the local helpers they call
+        n = todo.pop(0)
+        if n in closure:
+            continue
+        closure.append(n)
+        todo += sorted(m for m in free_loads(local[n]) if m in local and m not in closure)
+    for name in closure:
+        fn = local[name]
         doc = (ast.get_docstring(fn) or "").strip().splitlines()
         args = [a.arg for a in fn.args.posonlyargs + fn.args.args]
-        loads = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        loads = free_loads(fn)
         out["caps"].append(
             {
                 "name": fn.name,
@@ -270,7 +306,7 @@ def consolidate_job(job: dict[str, Any]) -> dict[str, Any]:
                 "doc": doc[0][:160] if doc else "(no docstring)",
                 "sig": f"{fn.name}({', '.join(args)})",
                 "arity": len(args),
-                "deps": sorted(loads & (known | {d.name for d in defs})),
+                "deps": sorted(loads & (known | set(local)) - {fn.name}),
             }
         )
     return out
@@ -329,12 +365,17 @@ class AppEngine:
             "experiment": f"aosr-{tag}",
         }
 
-    def run(
+    def jobs(
         self, tasks: list[Task], image: Image, model: Model, settings: Settings, meta: dict[str, str]
-    ) -> list[Episode]:
+    ) -> list[dict[str, Any]]:
+        """One worker job per task; the context mode decides what of the image the worker sees."""
         common = self._common(image, model, meta)
         if settings.context == "none":
             common.update(library="", names=[], index=[], precedents=[])
+        elif settings.context == "helpers":
+            common.update(precedents=[])
+        elif settings.context == "precedents":
+            common.update(index=[])  # functions stay loaded, since earlier programs call them
         jobs = [
             {
                 **common,
@@ -345,6 +386,12 @@ class AppEngine:
             }
             for t in tasks
         ]
+        return jobs
+
+    def run(
+        self, tasks: list[Task], image: Image, model: Model, settings: Settings, meta: dict[str, str]
+    ) -> list[Episode]:
+        jobs = self.jobs(tasks, image, model, settings, meta)
         with ProcessPoolExecutor(max(1, min(self.parallel, len(jobs)))) as ex:
             results = list(ex.map(episode_job, jobs))
         return [self._episode(r) for r in results]
@@ -393,8 +440,9 @@ class AppEngine:
                 "used": sorted(ep.retrieved),
                 "instruction": ep.extra.get("instruction", ""),
                 "experiment": f"{common['experiment']}-replay",
+                "position": pos,
             }
-            for t, ep, _ in solved
+            for t, ep, pos in solved
         ]
         with ProcessPoolExecutor(max(1, min(self.parallel, len(jobs)))) as ex:
             return list(ex.map(consolidate_job, jobs))
@@ -406,7 +454,7 @@ class AppEngine:
                 head.caps[n].uses += 1
         added = []
         if c["ok"]:
-            position = len(head.programs)
+            position = int(c.get("position", 0))
             for cap in c["caps"]:
                 if cap["name"] in head.caps:
                     continue
@@ -419,7 +467,13 @@ class AppEngine:
                     "task": c["task"],
                     "src": c["program"],
                     "instruction": c["instruction"],
-                    "calls": c["used"],
+                    "calls": c.get("calls_in_replay", []),
                 }
             )
-        return {"task": c["task"], "replayed": c["ok"], "added": added, "used": c["used"]}
+        return {
+            "task": c["task"],
+            "replayed": c["ok"],
+            "added": added,
+            "used": c["used"],
+            "renamed": c.get("renamed", {}),
+        }
